@@ -20,7 +20,22 @@
       "Bash(mvn -pl mini-mvcc test -B -Dtest=ScenarioRunnerTest#writeConflictDemo)",
       "Bash(mvn -pl mini-mvcc clean test -B -Dtest=ScenarioRunnerTest#writeConflictDemo)",
       "Bash(mvn -B verify)",
-      "Bash(python tools/verify_local.py --strict)"
+      "Bash(python tools/verify_local.py --strict)",
+      "Bash(sudo apt *)",
+      "Read(//etc/apt/**)",
+      "Read(//etc/apt/sources.list.d/**)",
+      "Bash(sudo sed *)",
+      "Bash(docker --version)",
+      "Bash(docker compose *)",
+      "Read(//root/.claude/**)",
+      "Read(//mnt/c/Users/**)",
+      "Bash(mvn -B verify -Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true -Dmaven.wagon.http.ssl.ignore.validity.dates=true)",
+      "Bash(env)",
+      "Bash(mvn -pl mini-proxy dependency:resolve -B)",
+      "Bash(mvn -pl mini-proxy compile -B)",
+      "Bash(mvn -pl mini-proxy test -Dtest=MySqlPacketCodecTest -B)",
+      "Bash(mvn -pl mini-proxy test -Dtest=AuthNativePasswordTest,HandshakePacketTest,MySqlPacketCodecTest -B)",
+      "Bash(mvn -pl mini-proxy test -B)"
     ]
   }
 }
