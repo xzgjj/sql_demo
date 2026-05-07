@@ -19,7 +19,7 @@ public class BackendConnection {
     private volatile long borrowedAt;
     private volatile long lastUsedAt;
     private volatile boolean healthy;
-    private Channel clientChannel;
+    private volatile Channel clientChannel;
 
     public BackendConnection(DataSourceId dataSourceId, Channel channel) {
         this.dataSourceId = dataSourceId;

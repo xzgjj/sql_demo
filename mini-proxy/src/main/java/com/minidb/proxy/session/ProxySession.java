@@ -13,6 +13,7 @@ public class ProxySession {
     private boolean inTransaction;
     private int boundShardId;
     private BackendConnection boundConnection;
+    private BackendConnection autoConnection; // non-tx connection, released on next query or disconnect
     private long lastWriteTimeMs;
 
     public ProxySession(Channel clientChannel) {
@@ -46,6 +47,10 @@ public class ProxySession {
         this.boundShardId = -1;
         this.boundConnection = null;
     }
+
+    public BackendConnection autoConnection() { return autoConnection; }
+    public void setAutoConnection(BackendConnection c) { this.autoConnection = c; }
+    public void clearAutoConnection() { this.autoConnection = null; }
 
     public long lastWriteTimeMs() { return lastWriteTimeMs; }
     public void markWrite() { this.lastWriteTimeMs = System.currentTimeMillis(); }
