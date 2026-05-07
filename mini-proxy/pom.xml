@@ -37,7 +37,6 @@
             <artifactId>netty-transport-native-epoll</artifactId>
             <version>${netty.version}</version>
             <classifier>linux-x86_64</classifier>
-            <scope>runtime</scope>
         </dependency>
 
         <!-- Druid SQL Parser -->
