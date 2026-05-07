@@ -51,6 +51,10 @@ public class TransactionManager {
         return Set.copyOf(activeTransactions.values());
     }
 
+    public boolean isActive(long txnId) {
+        return activeTransactions.containsKey(txnId);
+    }
+
     public long nextTxnId() {
         return nextTxnId.get();
     }

@@ -70,7 +70,8 @@ public class VersionedKVStore {
             allVersions.put(undoVid, new RecordVersion(key, current.value(),
                     current.createdTxnId(), current.deletedTxnId(), current.undoPtr()));
             txn.addUndoLog(new UndoLogRecord(undoId, key, current.value(),
-                    current.createdTxnId(), current.deletedTxnId(), 0));
+                    current.createdTxnId(), current.deletedTxnId(),
+                    current.undoPtr()));
             RecordVersion v = new RecordVersion(key, value, txn.txnId(), 0, undoVid);
             allVersions.put(newVid, v);
             return v;
@@ -95,7 +96,8 @@ public class VersionedKVStore {
             }
             long undoId = undoIdSeq.getAndIncrement();
             txn.addUndoLog(new UndoLogRecord(undoId, key, current.value(),
-                    current.createdTxnId(), current.deletedTxnId(), 0));
+                    current.createdTxnId(), current.deletedTxnId(),
+                    current.undoPtr()));
             return current.withDeletedTxnId(txn.txnId());
         });
     }
@@ -122,6 +124,26 @@ public class VersionedKVStore {
         return Collections.unmodifiableList(chain);
     }
 
+    public String versionChainPrettyPrint(String key) {
+        List<RecordVersion> chain = versionChain(key);
+        if (chain.isEmpty()) {
+            return "Key '" + key + "': no versions";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Key '").append(key).append("' version chain:\n");
+        for (int i = 0; i < chain.size(); i++) {
+            RecordVersion v = chain.get(i);
+            sb.append("  [v").append(chain.size() - i).append("] ");
+            sb.append("val=").append(v.valueAsString());
+            sb.append(", createdBy=T").append(v.createdTxnId());
+            if (v.deletedTxnId() != 0) {
+                sb.append(", deletedBy=T").append(v.deletedTxnId());
+            }
+            sb.append('\n');
+        }
+        return sb.toString();
+    }
+
     private void restoreFromUndo(UndoLogRecord undo) {
         String key = undo.key();
         latestVersions.compute(key, (k, current) -> {
@@ -137,8 +159,7 @@ public class VersionedKVStore {
     }
 
     private boolean isActive(long txnId) {
-        return txnManager.activeTransactions().stream()
-                .anyMatch(t -> t.txnId() == txnId);
+        return txnManager.isActive(txnId);
     }
 
     private ReadView resolveReadView(Transaction txn) {
