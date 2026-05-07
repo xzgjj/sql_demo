@@ -1,7 +1,11 @@
 package com.minidb.proxy.pool;
 
+import com.minidb.proxy.handler.BackendRelayHandler;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.util.ReferenceCountUtil;
 
 import java.nio.charset.StandardCharsets;
 
@@ -15,12 +19,16 @@ public class BackendConnection {
     private volatile long borrowedAt;
     private volatile long lastUsedAt;
     private volatile boolean healthy;
+    private Channel clientChannel;
 
     public BackendConnection(DataSourceId dataSourceId, Channel channel) {
         this.dataSourceId = dataSourceId;
         this.channel = channel;
         this.healthy = true;
         this.lastUsedAt = System.currentTimeMillis();
+
+        // Add relay handler so backend responses flow to client
+        this.channel.pipeline().addLast(new BackendRelayHandler(this));
     }
 
     public DataSourceId dataSourceId() { return dataSourceId; }
@@ -33,6 +41,16 @@ public class BackendConnection {
 
     public long lastUsedAt() { return lastUsedAt; }
     public void markUsed() { this.lastUsedAt = System.currentTimeMillis(); }
+
+    public void setClientChannel(Channel clientChannel) {
+        this.clientChannel = clientChannel;
+    }
+
+    public void clearClientChannel() {
+        this.clientChannel = null;
+    }
+
+    public Channel clientChannel() { return clientChannel; }
 
     public ChannelFuture writeAndFlush(byte[] data) {
         return channel.writeAndFlush(channel.alloc().buffer().writeBytes(data));

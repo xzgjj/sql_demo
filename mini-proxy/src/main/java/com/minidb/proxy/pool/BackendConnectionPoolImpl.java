@@ -11,9 +11,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Minimal backend connection pool using blocking queues.
+ * Minimal backend connection pool using blocking queues with idle eviction.
  */
 public class BackendConnectionPoolImpl implements BackendConnectionPool {
 
@@ -21,13 +22,14 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
 
     private final Map<DataSourceId, BlockingQueue<BackendConnection>> idleQueues = new ConcurrentHashMap<>();
     private final Map<DataSourceId, Integer> maxSizes = new ConcurrentHashMap<>();
-    private final Map<DataSourceId, Integer> activeCounts = new ConcurrentHashMap<>();
+    private final Map<DataSourceId, AtomicInteger> activeCounts = new ConcurrentHashMap<>();
     private final Map<DataSourceId, BackendServerConfig> serverConfigs = new ConcurrentHashMap<>();
 
     private final long borrowTimeoutMs;
     private final long idleTimeoutMs;
     private final EventLoopGroup workerGroup;
     private volatile boolean closed;
+    private ScheduledExecutorService evictionScheduler;
 
     public BackendConnectionPoolImpl(long borrowTimeoutMs, long idleTimeoutMs, EventLoopGroup workerGroup) {
         this.borrowTimeoutMs = borrowTimeoutMs;
@@ -39,7 +41,18 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         serverConfigs.put(id, config);
         maxSizes.put(id, maxSize);
         idleQueues.computeIfAbsent(id, k -> new LinkedBlockingQueue<>());
-        activeCounts.putIfAbsent(id, 0);
+        activeCounts.putIfAbsent(id, new AtomicInteger(0));
+    }
+
+    public void startEviction() {
+        if (idleTimeoutMs <= 0) return;
+        evictionScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "pool-evictor");
+            t.setDaemon(true);
+            return t;
+        });
+        evictionScheduler.scheduleWithFixedDelay(this::evictIdleConnections,
+                idleTimeoutMs / 2, idleTimeoutMs / 2, TimeUnit.MILLISECONDS);
     }
 
     @Override
@@ -54,23 +67,22 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         if (conn != null) {
             if (conn.healthy()) {
                 conn.markBorrowed();
-                activeCounts.merge(id, 1, Integer::sum);
+                incActiveCount(id);
                 log.debug("Reused idle connection to {}", id.name());
                 return conn;
             }
-            // stale — close and remove
             conn.close();
-            activeCounts.merge(id, -1, Integer::sum);
+            decActiveCount(id);
         }
 
         // Maybe create a new connection
-        int active = activeCounts.getOrDefault(id, 0);
+        int active = activeCounts.getOrDefault(id, new AtomicInteger(0)).get();
         int max = maxSizes.getOrDefault(id, 16);
         if (active < max) {
             BackendConnection newConn = createConnection(id);
             if (newConn != null) {
                 newConn.markBorrowed();
-                activeCounts.merge(id, 1, Integer::sum);
+                incActiveCount(id);
                 log.debug("Created new connection to {}", id.name());
                 return newConn;
             }
@@ -80,15 +92,15 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         try {
             conn = queue.poll(borrowTimeoutMs, TimeUnit.MILLISECONDS);
             if (conn == null) {
-                throw new RuntimeException("Connection pool exhausted for " + id.name() + " after " + borrowTimeoutMs + "ms");
+                throw new RuntimeException("Connection pool exhausted for " + id.name());
             }
             if (!conn.healthy()) {
                 conn.close();
-                activeCounts.merge(id, -1, Integer::sum);
+                decActiveCount(id);
                 return borrow(id); // retry
             }
             conn.markBorrowed();
-            activeCounts.merge(id, 1, Integer::sum);
+            incActiveCount(id);
             return conn;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -106,7 +118,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
             return;
         }
         conn.markUsed();
-        activeCounts.merge(id, -1, Integer::sum);
+        decActiveCount(id);
         queue.offer(conn);
         log.debug("Released connection to {}", id.name());
     }
@@ -117,12 +129,15 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         DataSourceId id = conn.dataSourceId();
         conn.markUnhealthy();
         conn.close();
-        activeCounts.merge(id, -1, Integer::sum);
+        decActiveCount(id);
         log.info("Invalidated connection to {}", id.name());
     }
 
     public void drainAndClose() {
         closed = true;
+        if (evictionScheduler != null) {
+            evictionScheduler.shutdown();
+        }
         for (Map.Entry<DataSourceId, BlockingQueue<BackendConnection>> entry : idleQueues.entrySet()) {
             BackendConnection conn;
             while ((conn = entry.getValue().poll()) != null) {
@@ -130,6 +145,35 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
             }
         }
         log.info("Connection pool drained");
+    }
+
+    private void evictIdleConnections() {
+        long now = System.currentTimeMillis();
+        for (Map.Entry<DataSourceId, BlockingQueue<BackendConnection>> entry : idleQueues.entrySet()) {
+            BlockingQueue<BackendConnection> queue = entry.getValue();
+            for (BackendConnection conn : queue) {
+                if (now - conn.lastUsedAt() > idleTimeoutMs) {
+                    if (queue.remove(conn)) {
+                        conn.close();
+                        decActiveCount(entry.getKey());
+                        log.debug("Evicted idle connection to {}", entry.getKey().name());
+                    }
+                }
+            }
+        }
+    }
+
+    private void incActiveCount(DataSourceId id) {
+        AtomicInteger c = activeCounts.get(id);
+        if (c != null) c.incrementAndGet();
+    }
+
+    private void decActiveCount(DataSourceId id) {
+        AtomicInteger c = activeCounts.get(id);
+        if (c != null) {
+            // floor at 0 to prevent underflow
+            c.updateAndGet(v -> v > 0 ? v - 1 : 0);
+        }
     }
 
     private BackendConnection createConnection(DataSourceId id) {
@@ -156,25 +200,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
                 .option(ChannelOption.TCP_NODELAY, true)
                 .option(ChannelOption.SO_KEEPALIVE, true)
-                .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .handler(new ChannelInitializer<>() {
-                    @Override
-                    protected void initChannel(Channel ch) {
-                        // minimal handler — just log events
-                        ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
-                            @Override
-                            public void channelInactive(ChannelHandlerContext ctx) {
-                                log.debug("Backend connection closed to {}:{}", host, port);
-                            }
-
-                            @Override
-                            public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-                                log.warn("Backend connection error to {}:{}", host, port, cause);
-                                ctx.close();
-                            }
-                        });
-                    }
-                });
+                .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);
         return b.connect(host, port);
     }
 

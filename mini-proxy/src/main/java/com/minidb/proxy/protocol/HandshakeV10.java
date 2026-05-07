@@ -88,6 +88,10 @@ public final class HandshakeV10 {
     }
 
     public static HandshakeResponse41 parseResponse(ByteBuf payload) {
+        if (payload.readableBytes() < 32) { // minimum handshake response size
+            throw new IllegalArgumentException(
+                    "Handshake response too short: " + payload.readableBytes() + " bytes");
+        }
         int capabilityFlags = (int) payload.readUnsignedIntLE();
         int maxPacketSize = payload.readIntLE();
         byte characterSet = payload.readByte();

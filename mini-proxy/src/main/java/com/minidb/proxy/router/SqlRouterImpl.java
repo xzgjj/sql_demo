@@ -57,7 +57,13 @@ public class SqlRouterImpl {
             return RoutePlan.toDataSource(boundDs, session.boundShardId());
         }
 
-        // Not yet bound: assign based on SQL
+        // Not yet bound: assign based on SQL.
+        // Non-DML commands (SET, SHOW) inside tx without a bound connection:
+        // default to PRIMARY without requiring shard key.
+        if (!sql.isWrite() && !sql.isRead()) {
+            return RoutePlan.toDataSource(DataSourceId.PRIMARY, null);
+        }
+
         DataSourceId ds = resolveWriteDataSource(sql);
         Integer shardId = resolveShardId(sql);
 

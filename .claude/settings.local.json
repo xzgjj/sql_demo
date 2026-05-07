@@ -44,7 +44,8 @@
       "Bash(mvn -pl mini-proxy test -B -Dtest='ProxyIntegrationTest')",
       "Bash(DOCKER_HOST=unix:///var/run/docker.sock mvn -pl mini-proxy test -B -Dtest='ProxyIntegrationTest')",
       "Bash(python *)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(mvn -B verify -Dtest='!*IntegrationTest')"
     ]
   }
 }

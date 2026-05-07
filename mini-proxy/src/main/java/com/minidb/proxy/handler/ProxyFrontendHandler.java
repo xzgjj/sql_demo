@@ -11,9 +11,7 @@ import com.minidb.proxy.router.RoutePlan;
 import com.minidb.proxy.router.SqlRouterImpl;
 import com.minidb.proxy.session.ConnectionState;
 import com.minidb.proxy.session.ProxySession;
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.util.AttributeKey;
@@ -21,6 +19,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
 public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
@@ -52,7 +52,8 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         byte[] scramble = AuthNativePassword.generateScramble(20);
         channel.attr(SCRAMBLE_KEY).set(scramble);
 
-        MySqlPacket handshake = HandshakeV10.build(1 + (int) (Math.random() * 10000), scramble);
+        MySqlPacket handshake = HandshakeV10.build(
+                ThreadLocalRandom.current().nextInt(10000) + 1, scramble);
         ctx.writeAndFlush(handshake);
     }
 
@@ -89,7 +90,8 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             } else {
                 log.warn("Auth failed for '{}'", response.username());
                 ctx.writeAndFlush(ResponsePackets.accessDenied((byte) 2, response.username()));
-                ctx.channel().eventLoop().schedule((Runnable) ctx::close, 100, java.util.concurrent.TimeUnit.MILLISECONDS);
+                ctx.channel().eventLoop().schedule(
+                        (Runnable) ctx::close, 100, TimeUnit.MILLISECONDS);
             }
         } catch (Exception e) {
             log.error("Bad handshake", e);
@@ -107,7 +109,7 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             return;
         }
 
-        packet.payload().skipBytes(1); // skip command byte
+        packet.payload().skipBytes(1);
         String sql = packet.payload().readCharSequence(
                 packet.payload().readableBytes(), StandardCharsets.UTF_8).toString();
         packet.release();
@@ -125,70 +127,57 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             return;
         }
 
-        // Transaction commands are handled purely in session
+        // Transaction commands handled purely in session
         if (plan.sessionOnly()) {
             handleTxCommand(ctx, session, parsed);
             return;
         }
 
-        // Route to backend
+        // Acquire backend connection
         BackendConnection backendConn;
         try {
             backendConn = plan.requiresBackend()
                     ? pool.borrow(plan.dataSourceId())
                     : pool.borrow(session.boundConnection().dataSourceId());
         } catch (Exception e) {
-            log.error("Failed to borrow backend connection to {}", plan.dataSourceId(), e);
+            log.error("Failed to borrow backend connection", e);
             ctx.writeAndFlush(ResponsePackets.err((byte) 1, 1040,
                     "Too many connections: " + e.getMessage()));
             return;
         }
 
-        // Inside transaction: bind if not yet bound
+        // Bind session inside transaction
         if (session.inTransaction() && session.boundConnection() == null) {
             session.bind(plan.shardId() != null ? plan.shardId() : -1, backendConn);
             log.debug("Session {} bound to shard_{} on {}", session.sessionId(),
                     session.boundShardId(), backendConn.dataSourceId().name());
         }
 
-        // Mark write time
         if (parsed.isWrite()) {
             session.markWrite();
         }
 
-        // Relay SQL to backend
-        byte[] sqlBytes = sql.getBytes(StandardCharsets.UTF_8);
-        ByteBuf queryBuf = ctx.alloc().buffer(1 + sqlBytes.length);
-        queryBuf.writeByte(COM_QUERY);
-        queryBuf.writeBytes(sqlBytes);
+        // Set relay target so backend responses flow to client
+        backendConn.setClientChannel(ctx.channel());
 
-        MySqlPacket queryPacket = new MySqlPacket(queryBuf.readableBytes(), (byte) 0,
-                queryBuf.retain().slice(0, queryBuf.readableBytes()));
-        queryBuf.release();
-
-        boolean[] released = {false};
-
-        // TODO: implement proper result set relay through backend channel pipeline
-        // For now, relay SQL via backend and send a synthetic OK
         backendConn.writeAndFlush(sql).addListener(future -> {
             if (!future.isSuccess()) {
                 log.error("Backend write failed to {}", backendConn.dataSourceId().name(), future.cause());
-                if (!released[0]) {
-                    pool.invalidate(backendConn);
-                    released[0] = true;
-                }
+                pool.invalidate(backendConn);
                 ctx.writeAndFlush(ResponsePackets.err((byte) 1, 2006,
                         "MySQL server has gone away"));
                 return;
             }
 
-            if (!session.inTransaction() && !released[0]) {
-                pool.release(backendConn);
-                released[0] = true;
+            // Release non-transactional connections after backend processes the query.
+            // The relay handler will forward the result set / OK / ERR to the client.
+            if (!session.inTransaction()) {
+                // Schedule release after response is relayed (simple heuristic: wait briefly)
+                ctx.channel().eventLoop().schedule((Runnable) () -> {
+                    backendConn.clearClientChannel();
+                    pool.release(backendConn);
+                }, 50, TimeUnit.MILLISECONDS);
             }
-            // Send OK for non-read SQL, or we'd need real result set relay
-            // TODO: result set relay in next step
-            ctx.writeAndFlush(ResponsePackets.ok((byte) 1));
         });
     }
 
@@ -198,20 +187,28 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         if (type == SqlType.BEGIN) {
             session.beginTransaction();
             ctx.writeAndFlush(ResponsePackets.ok((byte) 1));
+            log.debug("Session {} BEGIN transaction", session.sessionId());
         } else if (type == SqlType.COMMIT || type == SqlType.ROLLBACK) {
             BackendConnection bound = session.boundConnection();
             if (bound != null) {
                 bound.writeAndFlush(type == SqlType.COMMIT ? "COMMIT" : "ROLLBACK")
                         .addListener(f -> {
+                            bound.clearClientChannel();
                             pool.release(bound);
                             session.unbind();
                             session.endTransaction();
                             ctx.writeAndFlush(ResponsePackets.ok((byte) 1));
+                            log.debug("Session {} {} and released connection",
+                                    session.sessionId(), type);
                         });
             } else {
+                session.unbind();
                 session.endTransaction();
                 ctx.writeAndFlush(ResponsePackets.ok((byte) 1));
             }
+        } else {
+            // SET/SHOW/OTHER inside transaction: relay to bound connection or send OK
+            ctx.writeAndFlush(ResponsePackets.ok((byte) 1));
         }
     }
 
@@ -222,10 +219,16 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             log.info("Client {} disconnected, session={}", ctx.channel().remoteAddress(), session.sessionId());
             session.setState(ConnectionState.CLOSING);
 
-            // Rollback open transaction
-            if (session.inTransaction() && session.boundConnection() != null) {
-                session.boundConnection().writeAndFlush("ROLLBACK");
-                pool.release(session.boundConnection());
+            BackendConnection bound = session.boundConnection();
+            if (session.inTransaction() && bound != null) {
+                bound.writeAndFlush("ROLLBACK");
+                bound.clearClientChannel();
+                pool.release(bound);
+                session.unbind();
+            } else if (bound != null) {
+                bound.clearClientChannel();
+                pool.release(bound);
+                session.unbind();
             }
         }
     }
@@ -235,7 +238,9 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         log.warn("Exception on client channel {}", ctx.channel().remoteAddress(), cause);
         ProxySession session = ctx.channel().attr(SESSION_KEY).get();
         if (session != null && session.inTransaction() && session.boundConnection() != null) {
+            session.boundConnection().clearClientChannel();
             pool.invalidate(session.boundConnection());
+            session.unbind();
         }
         ctx.close();
     }
