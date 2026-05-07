@@ -30,9 +30,6 @@ public class VersionedKVStore {
         RecordVersion current = latestVersions.get(key);
         while (current != null) {
             if (rv.isVisible(current.createdTxnId(), current.deletedTxnId())) {
-                if (current.deletedTxnId() != 0) {
-                    return Optional.empty();
-                }
                 return Optional.ofNullable(current.value());
             }
             if (current.undoPtr() == 0) {
@@ -50,7 +47,9 @@ public class VersionedKVStore {
         }
         latestVersions.compute(key, (k, current) -> {
             if (current == null) {
+                long undoId = undoIdSeq.getAndIncrement();
                 long vid = versionIdSeq.getAndIncrement();
+                txn.addUndoLog(new UndoLogRecord(undoId, key, null, 0, 0, 0));
                 RecordVersion v = new RecordVersion(key, value, txn.txnId(), 0, 0);
                 allVersions.put(vid, v);
                 return v;
@@ -126,6 +125,9 @@ public class VersionedKVStore {
     private void restoreFromUndo(UndoLogRecord undo) {
         String key = undo.key();
         latestVersions.compute(key, (k, current) -> {
+            if (undo.oldCreatedTxnId() == 0 && undo.oldValue() == null) {
+                return null;
+            }
             if (current != null) {
                 return new RecordVersion(key, undo.oldValue(),
                         undo.oldCreatedTxnId(), undo.oldDeletedTxnId(), undo.prevUndoId());
