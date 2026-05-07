@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [v1, main]
+  pull_request:
+    branches: [v1, main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Verify local baseline
+        run: python tools/verify_local.py --strict

@@ -8,7 +8,10 @@ AGENT_EXECUTION_PROTOCOL.md
 # Project reports and local-only documentation
 doc/
 
-# Tests are local-only for this project
-test/
-tests/
+# Root-level generated tests are local-only for this project.
+# Maven module tests under */src/test/ are allowed.
+/test/
+/tests/
 
+# Build outputs
+target/
