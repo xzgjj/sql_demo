@@ -1,0 +1,14 @@
+# Project collaboration and planning context
+CLAUDE.md
+notes.txt
+implementation_plan.md
+diff.md
+AGENT_EXECUTION_PROTOCOL.md
+
+# Project reports and local-only documentation
+doc/
+
+# Tests are local-only for this project
+test/
+tests/
+
