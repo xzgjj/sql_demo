@@ -1,0 +1,61 @@
+version: "3.9"
+services:
+  mysql-primary:
+    image: mysql:8.4
+    container_name: minidb-primary
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: minidb
+    ports:
+      - "3307:3306"
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
+  mysql-replica:
+    image: mysql:8.4
+    container_name: minidb-replica
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: minidb
+    ports:
+      - "3308:3306"
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
+  mysql-shard-0:
+    image: mysql:8.4
+    container_name: minidb-shard-0
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: minidb_shard_0
+    ports:
+      - "3309:3306"
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
+  mysql-shard-1:
+    image: mysql:8.4
+    container_name: minidb-shard-1
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: minidb_shard_1
+    ports:
+      - "3310:3306"
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 10s
+      retries: 10

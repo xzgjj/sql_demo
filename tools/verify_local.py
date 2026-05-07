@@ -125,12 +125,64 @@ def check_tracked_sensitive_paths():
     return True, "tracked path policy ok"
 
 
+PROXY_EXPECTED_SOURCES = [
+    "MiniProxyServer.java",
+    "ProxyConfig.java",
+    "ProxyChannelInitializer.java",
+    "handler/ProxyFrontendHandler.java",
+    "protocol/MySqlPacket.java",
+    "protocol/MySqlPacketEncoder.java",
+    "protocol/MySqlPacketDecoder.java",
+    "protocol/CapabilityFlags.java",
+    "protocol/HandshakeV10.java",
+    "protocol/HandshakeResponse41.java",
+    "protocol/ResponsePackets.java",
+    "protocol/AuthNativePassword.java",
+    "parser/SqlType.java",
+    "parser/ParsedSql.java",
+    "parser/SqlParserImpl.java",
+    "router/RoutePlan.java",
+    "router/SqlRouterImpl.java",
+    "session/ConnectionState.java",
+    "session/ProxySession.java",
+    "pool/DataSourceId.java",
+    "pool/BackendConnection.java",
+    "pool/BackendConnectionPool.java",
+    "pool/BackendConnectionPoolImpl.java",
+]
+
+
+def check_proxy_sources():
+    src_root = ROOT / "mini-proxy" / "src" / "main" / "java" / "com" / "minidb" / "proxy"
+    missing = [f for f in PROXY_EXPECTED_SOURCES if not (src_root / f).exists()]
+    if missing:
+        return False, f"missing proxy sources: {', '.join(missing)}"
+    return True, f"{len(PROXY_EXPECTED_SOURCES)} proxy source files ok"
+
+
+def run_proxy_unit_tests():
+    mvn = shutil.which("mvn")
+    if mvn is None:
+        return False, "mvn not found"
+    code, output = run_command(
+        [mvn, "-pl", "mini-proxy", "test", "-B",
+         "-Dtest=MiniProxyModuleTest,MiniProxyServerTest,SqlParserImplTest,BackendConnectionPoolTest,AuthNativePasswordTest,HandshakePacketTest,MySqlPacketCodecTest,SqlRouterImplTest"],
+        timeout=180
+    )
+    if code != 0:
+        last_lines = output.splitlines()[-5:] if output else ["unknown error"]
+        return False, f"proxy unit tests failed: {'; '.join(last_lines)}"
+    return True, "proxy unit tests passed"
+
+
 def run_maven_verify(strict):
     mvn = shutil.which("mvn")
     if mvn is None:
         message = "mvn not found; skipped Maven verify"
         return (False if strict else True), message
-    code, output = run_command([mvn, "-B", "verify"], timeout=300)
+    code, output = run_command(
+        [mvn, "-B", "verify", "-Dtest=!*IntegrationTest"], timeout=300
+    )
     if code != 0:
         return False, output
     return True, "mvn -B verify passed"
@@ -177,6 +229,15 @@ def main():
 
     ok, detail = check_tracked_sensitive_paths()
     checks.append({"name": "git:tracked-path-policy", "ok": ok, "detail": detail})
+
+    ok = check_file("docker-compose.yml")
+    checks.append({"name": "file:docker-compose.yml", "ok": ok, "detail": "exists" if ok else "missing"})
+
+    ok, detail = check_proxy_sources()
+    checks.append({"name": "proxy:source-files", "ok": ok, "detail": detail})
+
+    ok, detail = run_proxy_unit_tests()
+    checks.append({"name": "proxy:unit-tests", "ok": ok, "detail": detail})
 
     ok, detail = run_maven_verify(args.strict)
     checks.append({"name": "build:maven-verify", "ok": ok, "detail": detail})

@@ -35,7 +35,16 @@
       "Bash(mvn -pl mini-proxy compile -B)",
       "Bash(mvn -pl mini-proxy test -Dtest=MySqlPacketCodecTest -B)",
       "Bash(mvn -pl mini-proxy test -Dtest=AuthNativePasswordTest,HandshakePacketTest,MySqlPacketCodecTest -B)",
-      "Bash(mvn -pl mini-proxy test -B)"
+      "Bash(mvn -pl mini-proxy test -B)",
+      "Bash(docker info *)",
+      "Bash(mvn -pl mini-proxy test -Dtest='!*IntegrationTest' -B)",
+      "Bash(mvn -pl mini-proxy test -B -Dtest='com.minidb.proxy.protocol.*,com.minidb.proxy.parser.*,com.minidb.proxy.router.*,com.minidb.proxy.pool.*,com.minidb.proxy.MiniProxyServerTest,com.minidb.proxy.MiniProxyModuleTest')",
+      "Bash(mvn -pl mini-proxy test-compile -B)",
+      "Bash(mvn -pl mini-proxy test -B -Dtest='MiniProxyModuleTest,MiniProxyServerTest,SqlParserImplTest,BackendConnectionPoolTest,AuthNativePasswordTest,HandshakePacketTest,MySqlPacketCodecTest,SqlRouterImplTest')",
+      "Bash(mvn -pl mini-proxy test -B -Dtest='ProxyIntegrationTest')",
+      "Bash(DOCKER_HOST=unix:///var/run/docker.sock mvn -pl mini-proxy test -B -Dtest='ProxyIntegrationTest')",
+      "Bash(python *)",
+      "Bash(python3 *)"
     ]
   }
 }
