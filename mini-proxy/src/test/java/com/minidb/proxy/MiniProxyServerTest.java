@@ -1,11 +1,19 @@
 package com.minidb.proxy;
 
 import com.minidb.proxy.handler.ProxyFrontendHandler;
+import com.minidb.proxy.parser.SqlParserImpl;
+import com.minidb.proxy.pool.BackendConnectionPool;
+import com.minidb.proxy.pool.BackendConnectionPoolImpl;
+import com.minidb.proxy.pool.DataSourceId;
 import com.minidb.proxy.protocol.*;
+import com.minidb.proxy.router.SqlRouterImpl;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.channel.EventLoopGroup;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.nio.NioEventLoopGroup;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -17,12 +25,31 @@ import static org.junit.jupiter.api.Assertions.*;
 class MiniProxyServerTest {
 
     private EmbeddedChannel channel;
+    private EventLoopGroup workerGroup;
+    private BackendConnectionPool pool;
+
+    @BeforeEach
+    void setUp() {
+        workerGroup = new NioEventLoopGroup(1);
+        pool = new BackendConnectionPoolImpl(5000, 600_000, workerGroup);
+    }
 
     @AfterEach
     void tearDown() {
         if (channel != null) {
             channel.finishAndReleaseAll();
         }
+        if (pool instanceof BackendConnectionPoolImpl impl) {
+            impl.drainAndClose();
+        }
+        workerGroup.shutdownGracefully();
+    }
+
+    private ProxyFrontendHandler createHandler(ProxyConfig config) {
+        return new ProxyFrontendHandler(config,
+                new SqlParserImpl(),
+                new SqlRouterImpl(config.shardCount(), config.readAfterWriteWindowMs()),
+                pool);
     }
 
     @Test
@@ -31,18 +58,16 @@ class MiniProxyServerTest {
         channel = new EmbeddedChannel(
                 new MySqlPacketDecoder(),
                 new MySqlPacketEncoder(),
-                new ProxyFrontendHandler(config)
+                createHandler(config)
         );
 
-        // Outbound goes through encoder → ByteBuf
         ByteBuf wire = channel.readOutbound();
         assertNotNull(wire, "Should send HandshakeV10 on connect");
 
-        // Decode wire format: 4-byte header + payload
-        wire.skipBytes(3); // length LE
+        wire.skipBytes(3); // length
         wire.skipBytes(1); // seq id
         byte protocolVersion = wire.readByte();
-        assertEquals(0x0a, protocolVersion, "Protocol version should be 10");
+        assertEquals(0x0a, protocolVersion);
         wire.release();
     }
 
@@ -52,19 +77,16 @@ class MiniProxyServerTest {
         channel = new EmbeddedChannel(
                 new MySqlPacketDecoder(),
                 new MySqlPacketEncoder(),
-                new ProxyFrontendHandler(config)
+                createHandler(config)
         );
 
-        // consume and parse handshake to extract scramble
         ByteBuf handshakeWire = channel.readOutbound();
         assertNotNull(handshakeWire);
         byte[] scrambleFull = extractScramble(handshakeWire);
         handshakeWire.release();
 
-        // build correct auth response
         byte[] authResponse = AuthNativePassword.computeAuthResponse(scrambleFull, config.proxyPassword());
         ByteBuf responsePayload = buildHandshakeResponse("proxy", authResponse);
-
         MySqlPacket response = new MySqlPacket(responsePayload.readableBytes(), (byte) 1,
                 responsePayload.retain().slice(0, responsePayload.readableBytes()));
         try {
@@ -75,11 +97,10 @@ class MiniProxyServerTest {
 
         ByteBuf resultWire = channel.readOutbound();
         assertNotNull(resultWire, "Should send OK after correct auth");
-        // decode wire: header(4) + payload
-        resultWire.skipBytes(3); // length LE
-        resultWire.skipBytes(1); // seq id
+        resultWire.skipBytes(3);
+        resultWire.skipBytes(1);
         byte header = resultWire.readByte();
-        assertEquals(0x00, header, "Should be OK packet (header 0x00)");
+        assertEquals(0x00, header, "Should be OK packet");
         resultWire.release();
     }
 
@@ -89,7 +110,7 @@ class MiniProxyServerTest {
         channel = new EmbeddedChannel(
                 new MySqlPacketDecoder(),
                 new MySqlPacketEncoder(),
-                new ProxyFrontendHandler(config)
+                createHandler(config)
         );
 
         ByteBuf handshakeWire = channel.readOutbound();
@@ -98,7 +119,6 @@ class MiniProxyServerTest {
 
         byte[] wrongResponse = new byte[20];
         ByteBuf responsePayload = buildHandshakeResponse("proxy", wrongResponse);
-
         MySqlPacket response = new MySqlPacket(responsePayload.readableBytes(), (byte) 1,
                 responsePayload.retain().slice(0, responsePayload.readableBytes()));
         try {
@@ -108,11 +128,11 @@ class MiniProxyServerTest {
         }
 
         ByteBuf resultWire = channel.readOutbound();
-        assertNotNull(resultWire, "Should send ERR after wrong auth");
+        assertNotNull(resultWire);
         resultWire.skipBytes(3);
         resultWire.skipBytes(1);
         byte header = resultWire.readByte();
-        assertEquals((byte) 0xFF, header, "Should be ERR packet (header 0xFF)");
+        assertEquals((byte) 0xFF, header, "Should be ERR packet");
         resultWire.release();
     }
 
@@ -123,7 +143,6 @@ class MiniProxyServerTest {
 
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<Exception> error = new AtomicReference<>();
-
         Thread t = new Thread(() -> {
             try {
                 server.start();
@@ -135,30 +154,79 @@ class MiniProxyServerTest {
         t.setDaemon(true);
         t.start();
 
-        latch.await(); // wait for bind to complete
-        if (error.get() != null) {
-            throw error.get();
-        }
-
-        assertTrue(server.isRunning(), "Server should be running");
+        latch.await();
+        if (error.get() != null) throw error.get();
+        assertTrue(server.isRunning());
         server.shutdown();
     }
 
-    /** Extract the 20-byte scramble from the HandshakeV10 wire format. */
+    @Test
+    void shouldHandleBeginCommitCommands() {
+        ProxyConfig config = ProxyConfig.defaults();
+        channel = new EmbeddedChannel(
+                new MySqlPacketDecoder(),
+                new MySqlPacketEncoder(),
+                createHandler(config)
+        );
+
+        // consume handshake and extract scramble
+        ByteBuf handshakeWire = channel.readOutbound();
+        assertNotNull(handshakeWire);
+        byte[] scramble = extractScramble(handshakeWire);
+        handshakeWire.release();
+
+        // send correct auth
+        byte[] authResponse = AuthNativePassword.computeAuthResponse(scramble, config.proxyPassword());
+        ByteBuf authPayload = buildHandshakeResponse("proxy", authResponse);
+        MySqlPacket authPacket = new MySqlPacket(authPayload.readableBytes(), (byte) 1,
+                authPayload.retain().slice(0, authPayload.readableBytes()));
+        try {
+            channel.writeInbound(authPacket);
+        } finally {
+            authPayload.release();
+        }
+
+        // consume auth OK
+        ByteBuf authResult = channel.readOutbound();
+        assertNotNull(authResult, "Should receive auth OK");
+        authResult.release();
+
+        // send BEGIN
+        byte[] beginBytes = "BEGIN".getBytes(StandardCharsets.UTF_8);
+        ByteBuf beginPayload = ByteBufAllocator.DEFAULT.buffer(1 + beginBytes.length);
+        beginPayload.writeByte(0x03); // COM_QUERY
+        beginPayload.writeBytes(beginBytes);
+
+        MySqlPacket beginPacket = new MySqlPacket(beginPayload.readableBytes(), (byte) 0,
+                beginPayload.retain().slice(0, beginPayload.readableBytes()));
+        try {
+            channel.writeInbound(beginPacket);
+        } finally {
+            beginPayload.release();
+        }
+
+        ByteBuf result = channel.readOutbound();
+        assertNotNull(result, "Should respond to BEGIN");
+        // skip 4-byte header (3 length + 1 seq) then read OK header
+        result.readByte(); result.readByte(); result.readByte(); // length LE
+        result.readByte(); // seq
+        byte header = result.readByte();
+        assertEquals(0x00, header, "BEGIN should get OK (header 0x00)");
+        result.release();
+    }
+
     private static byte[] extractScramble(ByteBuf wire) {
-        wire.skipBytes(3); // length
-        wire.skipBytes(1); // seq id
-        wire.readByte();   // protocol version
-        // skip null-term server version
+        wire.skipBytes(3);
+        wire.skipBytes(1);
+        wire.readByte();
         int nullIdx = indexOfNull(wire);
         wire.skipBytes(nullIdx + 1);
-        wire.readIntLE();  // connectionId
+        wire.readIntLE();
         byte[] scramble = new byte[20];
-        wire.readBytes(scramble, 0, 8); // part1
-        wire.readByte();   // filler
-        // skip: lowerFlags(2) + charset(1) + statusFlags(2) + upperFlags(2) + authLen(1) + reserved(10)
+        wire.readBytes(scramble, 0, 8);
+        wire.readByte();
         wire.skipBytes(2 + 1 + 2 + 2 + 1 + 10);
-        wire.readBytes(scramble, 8, 12); // part2
+        wire.readBytes(scramble, 8, 12);
         return scramble;
     }
 
@@ -173,8 +241,7 @@ class MiniProxyServerTest {
         buf.writeByte(authResponse.length);
         buf.writeBytes(authResponse);
         buf.writeByte(0x00);
-        byte[] plugin = "mysql_native_password".getBytes(StandardCharsets.UTF_8);
-        buf.writeBytes(plugin);
+        buf.writeBytes("mysql_native_password".getBytes(StandardCharsets.UTF_8));
         return buf;
     }
 

@@ -1,5 +1,10 @@
 package com.minidb.proxy;
 
+import com.minidb.proxy.parser.SqlParserImpl;
+import com.minidb.proxy.pool.BackendConnectionPool;
+import com.minidb.proxy.pool.BackendConnectionPoolImpl;
+import com.minidb.proxy.pool.DataSourceId;
+import com.minidb.proxy.router.SqlRouterImpl;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.ChannelOption;
@@ -21,6 +26,7 @@ public class MiniProxyServer {
     private final ProxyConfig config;
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
+    private BackendConnectionPoolImpl pool;
     private volatile boolean running;
 
     public MiniProxyServer(ProxyConfig config) {
@@ -33,10 +39,25 @@ public class MiniProxyServer {
         bossGroup = epoll ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
         workerGroup = epoll ? new EpollEventLoopGroup(threads) : new NioEventLoopGroup(threads);
 
+        // Shared components
+        SqlParserImpl sqlParser = new SqlParserImpl();
+        SqlRouterImpl router = new SqlRouterImpl(config.shardCount(), config.readAfterWriteWindowMs());
+        pool = new BackendConnectionPoolImpl(config.borrowTimeoutMs(), config.idleTimeoutMs(), workerGroup);
+
+        // Register backend data sources
+        pool.registerDataSource(DataSourceId.PRIMARY,
+                new BackendConnectionPoolImpl.BackendServerConfig("127.0.0.1", 3307), 16);
+        pool.registerDataSource(DataSourceId.REPLICA,
+                new BackendConnectionPoolImpl.BackendServerConfig("127.0.0.1", 3308), 8);
+        for (int i = 0; i < config.shardCount(); i++) {
+            pool.registerDataSource(DataSourceId.shard(i),
+                    new BackendConnectionPoolImpl.BackendServerConfig("127.0.0.1", 3309 + i), 8);
+        }
+
         ServerBootstrap b = new ServerBootstrap();
         b.group(bossGroup, workerGroup)
                 .channel(epoll ? EpollServerSocketChannel.class : NioServerSocketChannel.class)
-                .childHandler(new ProxyChannelInitializer(config))
+                .childHandler(new ProxyChannelInitializer(config, sqlParser, router, pool))
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);
@@ -49,6 +70,9 @@ public class MiniProxyServer {
 
     public void shutdown() {
         running = false;
+        if (pool != null) {
+            pool.drainAndClose();
+        }
         if (bossGroup != null) {
             bossGroup.shutdownGracefully(1, 30, TimeUnit.SECONDS);
         }
@@ -65,7 +89,6 @@ public class MiniProxyServer {
     public static void main(String[] args) throws Exception {
         MiniProxyServer server = new MiniProxyServer(ProxyConfig.defaults());
         server.start();
-
         Runtime.getRuntime().addShutdownHook(new Thread(server::shutdown));
     }
 }
