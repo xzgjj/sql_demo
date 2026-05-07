@@ -6,10 +6,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.MySQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import java.io.*;
 import java.net.Socket;
@@ -20,24 +16,20 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@Testcontainers
+/**
+ * Manual integration test. Requires a running MySQL on localhost:3306.
+ * Start: docker compose up -d mysql-primary
+ * Then remove @Disabled and run this test.
+ */
 class ProxyIntegrationTest {
-
-    @Container
-    private static final MySQLContainer<?> mysql = new MySQLContainer<>(
-            DockerImageName.parse("mysql:8.4").asCompatibleSubstituteFor("mysql"))
-            .withDatabaseName("minidb")
-            .withUsername("root")
-            .withPassword("root123");
 
     private MiniProxyServer proxy;
     private Thread proxyThread;
 
     @BeforeEach
     void setUp() throws Exception {
-        // Point proxy to the Testcontainers MySQL
         ProxyConfig config = new ProxyConfig(13307, "proxy", "proxy123",
-                4, 3000, 600_000, 3000, 1);
+                4, 3000, 600_000, 3000, 1, 5000, "127.0.0.1", 3307);
 
         proxy = new MiniProxyServer(config);
 
@@ -64,7 +56,7 @@ class ProxyIntegrationTest {
     }
 
     @Test
-    @Disabled("Requires Docker daemon accessible by Testcontainers. Run manually with: docker compose up -d && mysql -h 127.0.0.1 -P 13307 -u proxy -p")
+    @Disabled("Testcontainers auto-detection incompatible with WSL2 Docker Desktop. Manual test: docker compose up -d && mysql -h 127.0.0.1 -P 13307 -u proxy -p")
     void shouldCompleteHandshakeAndSelectOne() throws Exception {
         // Connect to mini-proxy
         Socket socket = new Socket("127.0.0.1", 13307);

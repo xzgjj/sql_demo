@@ -27,13 +27,16 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
 
     private final long borrowTimeoutMs;
     private final long idleTimeoutMs;
+    private final int connectTimeoutMs;
     private final EventLoopGroup workerGroup;
     private volatile boolean closed;
     private ScheduledExecutorService evictionScheduler;
 
-    public BackendConnectionPoolImpl(long borrowTimeoutMs, long idleTimeoutMs, EventLoopGroup workerGroup) {
+    public BackendConnectionPoolImpl(long borrowTimeoutMs, long idleTimeoutMs,
+                                      int connectTimeoutMs, EventLoopGroup workerGroup) {
         this.borrowTimeoutMs = borrowTimeoutMs;
         this.idleTimeoutMs = idleTimeoutMs;
+        this.connectTimeoutMs = connectTimeoutMs;
         this.workerGroup = workerGroup;
     }
 
@@ -149,17 +152,16 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
 
     private void evictIdleConnections() {
         long now = System.currentTimeMillis();
-        for (Map.Entry<DataSourceId, BlockingQueue<BackendConnection>> entry : idleQueues.entrySet()) {
-            BlockingQueue<BackendConnection> queue = entry.getValue();
-            for (BackendConnection conn : queue) {
+        for (var entry : idleQueues.entrySet()) {
+            entry.getValue().removeIf(conn -> {
                 if (now - conn.lastUsedAt() > idleTimeoutMs) {
-                    if (queue.remove(conn)) {
-                        conn.close();
-                        decActiveCount(entry.getKey());
-                        log.debug("Evicted idle connection to {}", entry.getKey().name());
-                    }
+                    conn.close();
+                    decActiveCount(entry.getKey());
+                    log.debug("Evicted idle connection to {}", entry.getKey().name());
+                    return true;
                 }
-            }
+                return false;
+            });
         }
     }
 
@@ -181,7 +183,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         if (cfg == null) return null;
 
         ChannelFuture connectFuture = connect(cfg.host(), cfg.port());
-        if (!connectFuture.awaitUninterruptibly(5000)) {
+        if (!connectFuture.awaitUninterruptibly(connectTimeoutMs)) {
             log.error("Connection timeout to {}:{}", cfg.host(), cfg.port());
             return null;
         }
@@ -197,7 +199,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         Bootstrap b = new Bootstrap();
         b.group(workerGroup)
                 .channel(Epoll.isAvailable() ? EpollSocketChannel.class : NioSocketChannel.class)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeoutMs)
                 .option(ChannelOption.TCP_NODELAY, true)
                 .option(ChannelOption.SO_KEEPALIVE, true)
                 .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);

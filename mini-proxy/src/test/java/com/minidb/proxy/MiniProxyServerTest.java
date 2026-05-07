@@ -31,7 +31,7 @@ class MiniProxyServerTest {
     @BeforeEach
     void setUp() {
         workerGroup = new NioEventLoopGroup(1);
-        pool = new BackendConnectionPoolImpl(5000, 600_000, workerGroup);
+        pool = new BackendConnectionPoolImpl(5000, 600_000, 5000, workerGroup);
     }
 
     @AfterEach
@@ -138,7 +138,7 @@ class MiniProxyServerTest {
 
     @Test
     void shouldBindToPort() throws Exception {
-        ProxyConfig config = new ProxyConfig(13307, "proxy", "proxy123", 16, 5000, 600_000, 3000, 2);
+        ProxyConfig config = new ProxyConfig(13307, "proxy", "proxy123", 16, 5000, 600_000, 3000, 2, 5000, "127.0.0.1", 3307);
         MiniProxyServer server = new MiniProxyServer(config);
 
         CountDownLatch latch = new CountDownLatch(1);

@@ -100,30 +100,21 @@ public class SqlRouterImpl {
     }
 
     private DataSourceId resolveWriteDataSource(ParsedSql sql) {
-        Integer shardId = resolveShardId(sql);
-        if (shardId != null) {
-            return DataSourceId.shard(shardId);
-        }
-        return DataSourceId.PRIMARY;
+        return dataSourceForSql(sql, DataSourceId.PRIMARY);
     }
 
     private DataSourceId primaryForSql(ParsedSql sql) {
-        Integer shardId = resolveShardId(sql);
-        if (shardId != null) {
-            return DataSourceId.shard(shardId);
-        }
-        return DataSourceId.PRIMARY;
+        return dataSourceForSql(sql, DataSourceId.PRIMARY);
     }
 
     private DataSourceId replicaForSql(ParsedSql sql) {
-        Integer shardId = resolveShardId(sql);
-        if (shardId != null) {
-            return DataSourceId.shard(shardId); // shard has its own primary
-        }
-        return DataSourceId.REPLICA;
+        return dataSourceForSql(sql, DataSourceId.REPLICA);
     }
 
-    private Integer resolveShardId(ParsedSql sql) {
+    private DataSourceId dataSourceForSql(ParsedSql sql, DataSourceId fallback) {
+        Integer shardId = resolveShardId(sql);
+        return shardId != null ? DataSourceId.shard(shardId) : fallback;
+    }
         Long key = sql.shardKey();
         if (key == null) return null;
         return (int) (key % shardCount);

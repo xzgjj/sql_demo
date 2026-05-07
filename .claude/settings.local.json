@@ -45,7 +45,16 @@
       "Bash(DOCKER_HOST=unix:///var/run/docker.sock mvn -pl mini-proxy test -B -Dtest='ProxyIntegrationTest')",
       "Bash(python *)",
       "Bash(python3 *)",
-      "Bash(mvn -B verify -Dtest='!*IntegrationTest')"
+      "Bash(mvn -B verify -Dtest='!*IntegrationTest')",
+      "Bash(mvn -pl mini-proxy test -B -Dtest='*Test')",
+      "Bash(mvn test *)",
+      "Bash(mvn compile *)",
+      "Bash(mvn -pl mini-proxy test -B -Dtest='ProxyIntegrationTest' -DfailIfNoTests=false)",
+      "Bash(TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock mvn -pl mini-proxy test -B -Dtest='ProxyIntegrationTest' -DfailIfNoTests=false)",
+      "Bash(echo \"test commit\")",
+      "Bash(sh .git/hooks/commit-msg /tmp/test-commit-msg)",
+      "Bash(echo 'Co-authored-by: Claude Opus 4.7 <noreply@anthropic.com>')",
+      "Bash(sh .git/hooks/commit-msg /tmp/test-bad)"
     ]
   }
 }

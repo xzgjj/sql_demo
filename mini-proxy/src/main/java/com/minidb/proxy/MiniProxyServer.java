@@ -42,16 +42,21 @@ public class MiniProxyServer {
         // Shared components
         SqlParserImpl sqlParser = new SqlParserImpl();
         SqlRouterImpl router = new SqlRouterImpl(config.shardCount(), config.readAfterWriteWindowMs());
-        pool = new BackendConnectionPoolImpl(config.borrowTimeoutMs(), config.idleTimeoutMs(), workerGroup);
+        pool = new BackendConnectionPoolImpl(config.borrowTimeoutMs(), config.idleTimeoutMs(),
+                config.backendConnectTimeoutMs(), workerGroup);
 
-        // Register backend data sources
+        // Register backend data sources from config
         pool.registerDataSource(DataSourceId.PRIMARY,
-                new BackendConnectionPoolImpl.BackendServerConfig("127.0.0.1", 3307), 16);
+                new BackendConnectionPoolImpl.BackendServerConfig(
+                        config.backendHost(), config.primaryPort()),
+                config.backendPoolMaxSize());
         pool.registerDataSource(DataSourceId.REPLICA,
-                new BackendConnectionPoolImpl.BackendServerConfig("127.0.0.1", 3308), 8);
+                new BackendConnectionPoolImpl.BackendServerConfig(
+                        config.backendHost(), config.replicaPort()), 8);
         for (int i = 0; i < config.shardCount(); i++) {
             pool.registerDataSource(DataSourceId.shard(i),
-                    new BackendConnectionPoolImpl.BackendServerConfig("127.0.0.1", 3309 + i), 8);
+                    new BackendConnectionPoolImpl.BackendServerConfig(
+                            config.backendHost(), config.shardPort(i)), 8);
         }
 
         ServerBootstrap b = new ServerBootstrap();
