@@ -1,5 +1,7 @@
 package com.minidb.mvcc.store;
 
+import java.nio.charset.StandardCharsets;
+
 public class RecordVersion {
     private final String key;
     private final byte[] value;
@@ -16,27 +18,29 @@ public class RecordVersion {
         this.undoPtr = undoPtr;
     }
 
-    public String key() {
-        return key;
+    public String key() { return key; }
+
+    public byte[] value() { return value != null ? value.clone() : null; }
+
+    public String valueAsString() {
+        return value != null ? new String(value, StandardCharsets.UTF_8) : "null";
     }
 
-    public byte[] value() {
-        return value != null ? value.clone() : null;
-    }
+    public long createdTxnId() { return createdTxnId; }
 
-    public long createdTxnId() {
-        return createdTxnId;
-    }
+    public long deletedTxnId() { return deletedTxnId; }
 
-    public long deletedTxnId() {
-        return deletedTxnId;
-    }
-
-    public long undoPtr() {
-        return undoPtr;
-    }
+    public long undoPtr() { return undoPtr; }
 
     public RecordVersion withDeletedTxnId(long newDeletedTxnId) {
         return new RecordVersion(key, value, createdTxnId, newDeletedTxnId, undoPtr);
+    }
+
+    @Override
+    public String toString() {
+        String val = valueAsString();
+        String status = deletedTxnId != 0 ? "DELETED" : "ALIVE";
+        return String.format("Version{key=%s, val=%s, createdBy=%d, %s, undoPtr=%d}",
+                key, val, createdTxnId, status, undoPtr);
     }
 }

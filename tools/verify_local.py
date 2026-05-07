@@ -126,10 +126,11 @@ def check_tracked_sensitive_paths():
 
 
 def run_maven_verify(strict):
-    if shutil.which("mvn") is None:
+    mvn = shutil.which("mvn")
+    if mvn is None:
         message = "mvn not found; skipped Maven verify"
         return (False if strict else True), message
-    code, output = run_command(["mvn", "-B", "verify"], timeout=300)
+    code, output = run_command([mvn, "-B", "verify"], timeout=300)
     if code != 0:
         return False, output
     return True, "mvn -B verify passed"

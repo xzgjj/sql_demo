@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "mcp__ccs-websearch__WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:15445.courses.cs.cmu.edu)",
+      "Bash(mvn -pl mini-mvcc test -B)",
+      "Read(//c/Users/72440/apache-maven-3.9.15/bin/**)",
+      "Bash(where mvn *)",
+      "Read(//c/Users/72440/**)",
+      "Read(//c/Program Files/Eclipse Adoptium/**)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files/Eclipse Adoptium//**)",
+      "Bash(export JAVA_HOME=\"/c/Program Files/Eclipse Adoptium/jdk-17.0.19.10-hotspot\")",
+      "Bash(export PATH=\"$JAVA_HOME/bin:/c/Users/72440/tools/apache-maven-3.9.15/bin:$PATH\")",
+      "Bash(java -version)",
+      "Bash(mvn -version)",
+      "Bash(mvn -pl mini-mvcc test -B -Dtest=ScenarioRunnerTest#writeConflictDemo -DfailIfNoTests=false)",
+      "Bash(mvn -pl mini-mvcc test -B -Dtest=ScenarioRunnerTest#writeConflictDemo)",
+      "Bash(mvn -pl mini-mvcc clean test -B -Dtest=ScenarioRunnerTest#writeConflictDemo)",
+      "Bash(mvn -B verify)",
+      "Bash(python tools/verify_local.py --strict)"
+    ]
+  }
+}

@@ -98,6 +98,26 @@ class VersionedKVStoreTest {
     }
 
     @Test
+    void shouldPreserveVersionChainAfterRollback() {
+        Transaction t1 = txnManager.begin(IsolationLevel.READ_COMMITTED);
+        store.put(t1, "A", bytes("v1"));
+        txnManager.commit(t1);
+
+        Transaction t2 = txnManager.begin(IsolationLevel.READ_COMMITTED);
+        store.put(t2, "A", bytes("v2"));
+        txnManager.commit(t2);
+
+        Transaction t3 = txnManager.begin(IsolationLevel.READ_COMMITTED);
+        store.put(t3, "A", bytes("v3-to-rollback"));
+        store.rollbackTransaction(t3);
+
+        var chain = store.versionChain("A");
+        assertEquals(2, chain.size(), "Should have v2 and v1 in chain");
+        assertEquals("v2", str(chain.get(0).value()));
+        assertEquals("v1", str(chain.get(1).value()));
+    }
+
+    @Test
     void shouldDeleteByMarking() {
         Transaction t1 = txnManager.begin(IsolationLevel.READ_COMMITTED);
         store.put(t1, "A", bytes("100"));
