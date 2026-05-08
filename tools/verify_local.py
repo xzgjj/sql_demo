@@ -180,9 +180,13 @@ ORDER_EXPECTED_SOURCES = [
     "service/FulfillmentService.java",
     "service/OutboxProcessor.java",
     "service/OrderExpiryScheduler.java",
+    "service/ProductService.java",
+    "service/ExceptionService.java",
     "web/OrderController.java",
     "web/PaymentController.java",
     "web/FulfillmentController.java",
+    "web/ProductController.java",
+    "web/ExceptionController.java",
     "infra/BusinessException.java",
     "infra/GlobalExceptionHandler.java",
 ]
@@ -201,13 +205,20 @@ def run_order_unit_tests():
     if mvn is None:
         return False, "mvn not found"
     code, output = run_command(
-        [mvn, "-pl", "order-api", "test", "-B", "-Dtest=OrderApiApplicationTest,IdempotencyServiceTest"],
+        [mvn, "-pl", "order-api", "test", "-B"],
         timeout=180
     )
     if code != 0:
         last_lines = output.splitlines()[-5:] if output else ["unknown error"]
         return False, f"order unit tests failed: {'; '.join(last_lines)}"
-    return True, "order unit tests passed"
+    # Parse test count
+    count = 0
+    for line in output.splitlines():
+        if "Tests run:" in line:
+            try:
+                count = int(line.split("Tests run:")[1].split(",")[0].strip())
+            except: pass
+    return True, f"order unit tests passed ({count} tests)"
 
 
 def run_maven_verify(strict):
@@ -273,6 +284,9 @@ def main():
 
     ok, detail = check_order_sources()
     checks.append({"name": "order:source-files", "ok": ok, "detail": detail})
+
+    ok, detail = run_order_unit_tests()
+    checks.append({"name": "order:unit-tests", "ok": ok, "detail": detail})
 
     ok, detail = run_maven_verify(args.strict)
     checks.append({"name": "build:maven-verify", "ok": ok, "detail": detail})
