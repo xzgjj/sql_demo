@@ -192,7 +192,32 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
             return null;
         }
 
-        return new BackendConnection(id, connectFuture.channel());
+        // Add MySQL packet codec for backend connection
+        var channel = connectFuture.channel();
+        if (channel.pipeline().get("backend-codec") == null) {
+            channel.pipeline().addLast("backend-codec",
+                    new com.minidb.proxy.protocol.MySqlPacketDecoder());
+        }
+
+        // Perform MySQL handshake + auth with backend
+        BackendAuthHandler authHandler = new BackendAuthHandler(
+                cfg.username(), cfg.password(), connectTimeoutMs);
+        channel.pipeline().addLast("backend-auth", authHandler);
+
+        try {
+            Boolean ok = authHandler.authFuture().get(connectTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (!ok) {
+                channel.close();
+                return null;
+            }
+        } catch (Exception e) {
+            log.error("Backend auth failed to {}:{}", cfg.host(), cfg.port(), e);
+            channel.close();
+            return null;
+        }
+
+        // Auth succeeded, BackendAuthHandler has removed itself from pipeline.
+        return new BackendConnection(id, channel);
     }
 
     private ChannelFuture connect(String host, int port) {
@@ -206,5 +231,9 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         return b.connect(host, port);
     }
 
-    public record BackendServerConfig(String host, int port) {}
+    public record BackendServerConfig(String host, int port, String username, String password) {
+        public BackendServerConfig(String host, int port) {
+            this(host, port, "root", "root123");
+        }
+    }
 }

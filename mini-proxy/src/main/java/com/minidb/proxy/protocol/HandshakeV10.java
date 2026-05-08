@@ -130,6 +130,50 @@ public final class HandshakeV10 {
                 username, authResponse, database, authPluginName);
     }
 
+    /**
+     * Parse a backend MySQL HandshakeV10 to extract the scramble.
+     * Used by the proxy when authenticating to backend MySQL instances.
+     */
+    public static byte[] extractScramble(byte[] payload) {
+        int pos = 1; // skip protocol version (0x0a)
+
+        // skip server version (null-terminated string)
+        while (pos < payload.length && payload[pos] != 0) pos++;
+        pos++; // null terminator
+
+        if (pos + 4 > payload.length) throw new IllegalArgumentException("Handshake too short");
+        // connectionId = readIntLE(payload, pos); — not needed
+        pos += 4;
+
+        // auth-plugin-data-part-1: 8 bytes
+        byte[] scramble = new byte[20]; // 8 + 12 for mysql_native_password
+        System.arraycopy(payload, pos, scramble, 0, 8);
+        pos += 8;
+        pos++; // filler (0x00)
+
+        // capability flags lower 2 bytes
+        pos += 2;
+        // character set 1 byte
+        pos += 1;
+        // status flags 2 bytes
+        pos += 2;
+        // capability flags upper 2 bytes
+        pos += 2;
+        // auth plugin data length 1 byte
+        pos += 1;
+        // reserved 10 bytes
+        pos += 10;
+
+        // auth-plugin-data-part-2: 12 bytes + null terminator
+        int remaining = Math.min(12, payload.length - pos);
+        for (int i = 0; i < remaining && (payload[pos] != 0); i++) {
+            if (8 + i < 20) scramble[8 + i] = payload[pos];
+            pos++;
+        }
+
+        return scramble;
+    }
+
     private static int indexOfNullByte(ByteBuf buf) {
         int start = buf.readerIndex();
         int end = start + buf.readableBytes();

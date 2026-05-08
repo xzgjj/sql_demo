@@ -39,24 +39,33 @@ public class MiniProxyServer {
         bossGroup = epoll ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
         workerGroup = epoll ? new EpollEventLoopGroup(threads) : new NioEventLoopGroup(threads);
 
+        // Route table lookup (JDBC-based, for two-phase routing via PRIMARY)
+        RouteTableLookup routeTableLookup = new RouteTableLookup(
+                config.backendHost(), config.primaryPort(),
+                config.backendUsername(), config.backendPassword(),
+                "minidb", config.backendConnectTimeoutMs());
+
         // Shared components
         SqlParserImpl sqlParser = new SqlParserImpl();
-        SqlRouterImpl router = new SqlRouterImpl(config.shardCount(), config.readAfterWriteWindowMs());
+        SqlRouterImpl router = new SqlRouterImpl(config.shardCount(),
+                config.readAfterWriteWindowMs(), routeTableLookup);
         pool = new BackendConnectionPoolImpl(config.borrowTimeoutMs(), config.idleTimeoutMs(),
                 config.backendConnectTimeoutMs(), workerGroup);
 
-        // Register backend data sources from config
-        pool.registerDataSource(DataSourceId.PRIMARY,
-                new BackendConnectionPoolImpl.BackendServerConfig(
-                        config.backendHost(), config.primaryPort()),
-                config.backendPoolMaxSize());
+        // Register backend data sources from config (with credentials for auth)
+        var backendCfg = new BackendConnectionPoolImpl.BackendServerConfig(
+                config.backendHost(), config.primaryPort(),
+                config.backendUsername(), config.backendPassword());
+        pool.registerDataSource(DataSourceId.PRIMARY, backendCfg, config.backendPoolMaxSize());
         pool.registerDataSource(DataSourceId.REPLICA,
                 new BackendConnectionPoolImpl.BackendServerConfig(
-                        config.backendHost(), config.replicaPort()), 8);
+                        config.backendHost(), config.replicaPort(),
+                        config.backendUsername(), config.backendPassword()), 8);
         for (int i = 0; i < config.shardCount(); i++) {
             pool.registerDataSource(DataSourceId.shard(i),
                     new BackendConnectionPoolImpl.BackendServerConfig(
-                            config.backendHost(), config.shardPort(i)), 8);
+                            config.backendHost(), config.shardPort(i),
+                            config.backendUsername(), config.backendPassword()), 8);
         }
 
         ServerBootstrap b = new ServerBootstrap();

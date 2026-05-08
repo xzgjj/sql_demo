@@ -29,6 +29,7 @@ class ProxyIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         ProxyConfig config = new ProxyConfig(13307, "proxy", "proxy123",
+                "root", "root123",
                 4, 3000, 600_000, 3000, 1, 5000, "127.0.0.1", 3307);
 
         proxy = new MiniProxyServer(config);
