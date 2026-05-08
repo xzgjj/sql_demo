@@ -1,7 +1,7 @@
 package com.minidb.order.service;
 
-import com.minidb.order.domain.IdempotencyStatus;
-import com.minidb.order.infra.BusinessException;
+import com.minidb.order.IdempotencyStatus;
+import com.minidb.order.BusinessException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;

@@ -1,6 +1,6 @@
 package com.minidb.order.service;
 
-import com.minidb.order.infra.BusinessException;
+import com.minidb.order.BusinessException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;

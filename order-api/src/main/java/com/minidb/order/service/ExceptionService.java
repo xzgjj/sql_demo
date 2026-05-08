@@ -1,6 +1,6 @@
 package com.minidb.order.service;
 
-import com.minidb.order.infra.BusinessException;
+import com.minidb.order.BusinessException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;

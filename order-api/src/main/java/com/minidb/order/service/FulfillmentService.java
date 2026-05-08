@@ -1,8 +1,8 @@
 package com.minidb.order.service;
 
-import com.minidb.order.domain.FulfillmentStatus;
-import com.minidb.order.domain.OrderStatus;
-import com.minidb.order.infra.BusinessException;
+import com.minidb.order.FulfillmentStatus;
+import com.minidb.order.OrderStatus;
+import com.minidb.order.BusinessException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -207,7 +207,7 @@ public class FulfillmentService {
             p.put("tracking_no", trackingNo);
             payload = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(p);
         } catch (Exception e) {
-            throw new com.minidb.order.infra.BusinessException("SERIALIZATION_ERROR", "Failed to serialize payload");
+            throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize payload");
         }
         orderService.writeOutbox("ORDER_SHIPPED", "ORDER", orderId, payload);
 

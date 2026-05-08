@@ -1,9 +1,9 @@
 package com.minidb.order.service;
 
-import com.minidb.order.domain.OrderStatus;
-import com.minidb.order.domain.PaymentStatus;
+import com.minidb.order.OrderStatus;
+import com.minidb.order.PaymentStatus;
 import com.minidb.order.dto.PaymentCallbackRequest;
-import com.minidb.order.infra.BusinessException;
+import com.minidb.order.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

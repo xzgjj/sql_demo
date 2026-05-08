@@ -1,12 +1,12 @@
 package com.minidb.proxy;
 
-import com.minidb.proxy.handler.ProxyFrontendHandler;
-import com.minidb.proxy.parser.SqlParserImpl;
-import com.minidb.proxy.pool.BackendConnectionPool;
-import com.minidb.proxy.pool.BackendConnectionPoolImpl;
-import com.minidb.proxy.pool.DataSourceId;
+import com.minidb.proxy.ProxyFrontendHandler;
+import com.minidb.proxy.SqlParserImpl;
+import com.minidb.proxy.BackendConnectionPool;
+import com.minidb.proxy.BackendConnectionPoolImpl;
+import com.minidb.proxy.DataSourceId;
 import com.minidb.proxy.protocol.*;
-import com.minidb.proxy.router.SqlRouterImpl;
+import com.minidb.proxy.SqlRouterImpl;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.EventLoopGroup;

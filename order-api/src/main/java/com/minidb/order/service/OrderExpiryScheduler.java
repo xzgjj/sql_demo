@@ -1,6 +1,6 @@
 package com.minidb.order.service;
 
-import com.minidb.order.domain.OrderStatus;
+import com.minidb.order.OrderStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
