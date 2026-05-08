@@ -219,6 +219,73 @@ public class FulfillmentService {
                String.format("%04d", (int) (Math.random() * 10000));
     }
 
+    // ---- Query methods ----
+
+    public record TaskListPage(java.util.List<TaskSummary> items, int page, int pageSize, long total) {}
+
+    public record TaskSummary(long taskId, String taskNo, long userId, long orderId,
+                              String orderNo, int status, Long assigneeId,
+                              java.time.LocalDateTime claimedAt, java.time.LocalDateTime createdAt) {}
+
+    public TaskListPage listTasks(Integer status, int page, int pageSize) {
+        var conditions = new java.util.ArrayList<String>();
+        var params = new java.util.ArrayList<Object>();
+        if (status != null) {
+            conditions.add("ft.status = ?");
+            params.add(status);
+        }
+        String whereClause = conditions.isEmpty() ? "1=1" : String.join(" AND ", conditions);
+
+        Long total = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM fulfillment_tasks ft WHERE " + whereClause,
+            Long.class, params.toArray()
+        );
+
+        int offset = (page - 1) * pageSize;
+        var queryParams = new java.util.ArrayList<>(params);
+        queryParams.add(pageSize);
+        queryParams.add(offset);
+
+        var items = jdbc.query(
+            "SELECT ft.id, ft.task_no, ft.user_id, ft.order_id, o.order_no, " +
+            "ft.status, ft.assignee_id, ft.claimed_at, ft.created_at " +
+            "FROM fulfillment_tasks ft JOIN orders o ON ft.order_id = o.id " +
+            "WHERE " + whereClause + " ORDER BY ft.created_at DESC LIMIT ? OFFSET ?",
+            (rs, rowNum) -> new TaskSummary(
+                rs.getLong("id"), rs.getString("task_no"), rs.getLong("user_id"),
+                rs.getLong("order_id"), rs.getString("order_no"), rs.getInt("status"),
+                (Long) rs.getObject("assignee_id"),
+                rs.getTimestamp("claimed_at") != null ? rs.getTimestamp("claimed_at").toLocalDateTime() : null,
+                rs.getTimestamp("created_at").toLocalDateTime()
+            ),
+            queryParams.toArray()
+        );
+
+        return new TaskListPage(items, page, pageSize, total != null ? total : 0);
+    }
+
+    @Transactional
+    public void pickTask(long taskId, long userId) {
+        int affected = jdbc.update(
+            "UPDATE fulfillment_tasks SET status = ?, version = version + 1 " +
+            "WHERE id = ? AND status = ? AND assignee_id = ?",
+            FulfillmentStatus.PICKED.getCode(), taskId,
+            FulfillmentStatus.PICKING.getCode(), userId
+        );
+        if (affected == 0) {
+            var current = jdbc.query(
+                "SELECT status, assignee_id FROM fulfillment_tasks WHERE id = ?",
+                rs -> rs.next() ? new Object[]{rs.getInt("status"), (Long) rs.getObject("assignee_id")} : null,
+                taskId
+            );
+            if (current == null) throw new BusinessException("TASK_NOT_FOUND", "Task not found: " + taskId);
+            if ((int) current[0] != FulfillmentStatus.PICKING.getCode())
+                throw new BusinessException("TASK_STATUS_ERROR", "Task must be in PICKING status, current: " + current[0]);
+            throw new BusinessException("TASK_NOT_ASSIGNED", "Task not assigned to user " + userId);
+        }
+        log.info("Task {} picked by user {}", taskId, userId);
+    }
+
     public record TaskInfo(long id, String taskNo, long userId, long orderId, int status,
                            Long assigneeId, int version) {}
 }

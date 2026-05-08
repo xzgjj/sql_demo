@@ -18,6 +18,17 @@ public class FulfillmentController {
         this.fulfillmentService = fulfillmentService;
     }
 
+    @GetMapping("/tasks")
+    @Operation(summary = "查询任务列表", description = "按状态筛选履约任务，支持分页。")
+    public ResponseEntity<ApiResponse<FulfillmentService.TaskListPage>> listTasks(
+            @RequestParam(required = false) Integer status,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        if (page < 1) page = 1;
+        if (pageSize < 1 || pageSize > 100) pageSize = 20;
+        return ResponseEntity.ok(ApiResponse.ok(fulfillmentService.listTasks(status, page, pageSize)));
+    }
+
     @GetMapping("/tasks/{taskId}")
     @Operation(summary = "查询任务详情")
     public ResponseEntity<ApiResponse<FulfillmentService.TaskInfo>> getTask(@PathVariable Long taskId) {
@@ -31,6 +42,15 @@ public class FulfillmentController {
             @RequestHeader("X-User-Id") Long userId,
             @RequestParam int version) {
         fulfillmentService.claimTask(taskId, userId, version);
+        return ResponseEntity.ok(ApiResponse.ok(null));
+    }
+
+    @PostMapping("/tasks/{taskId}/pick")
+    @Operation(summary = "拣货完成", description = "将任务从PICKING变为PICKED。只有当前认领人可操作。")
+    public ResponseEntity<ApiResponse<Void>> pickTask(
+            @PathVariable Long taskId,
+            @RequestHeader("X-User-Id") Long userId) {
+        fulfillmentService.pickTask(taskId, userId);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 
