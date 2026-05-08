@@ -17,4 +17,5 @@ public enum IdempotencyStatus {
     }
 
     public int getCode() { return code; }
+    public String getLabel() { return label; }
 }

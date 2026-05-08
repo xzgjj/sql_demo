@@ -1,8 +1,5 @@
 package com.minidb.mvcc;
 
-import com.minidb.mvcc.RecordVersion;
-import com.minidb.mvcc.TraceEvent;
-
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;

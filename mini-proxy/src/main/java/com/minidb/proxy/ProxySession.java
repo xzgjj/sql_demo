@@ -1,6 +1,5 @@
 package com.minidb.proxy;
 
-import com.minidb.proxy.BackendConnection;
 import io.netty.channel.Channel;
 
 import java.util.UUID;

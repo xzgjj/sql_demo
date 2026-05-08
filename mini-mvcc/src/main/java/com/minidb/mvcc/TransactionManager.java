@@ -1,7 +1,5 @@
 package com.minidb.mvcc;
 
-import com.minidb.mvcc.ReadView;
-
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;

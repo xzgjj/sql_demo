@@ -1,8 +1,5 @@
 package com.minidb.mvcc;
 
-import com.minidb.mvcc.RecordVersion;
-import com.minidb.mvcc.Transaction;
-
 public final class VisibilityChecker {
 
     private VisibilityChecker() {

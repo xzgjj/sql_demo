@@ -1,7 +1,5 @@
 package com.minidb.proxy;
 
-import com.minidb.proxy.MiniProxyServer;
-import com.minidb.proxy.ProxyConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;

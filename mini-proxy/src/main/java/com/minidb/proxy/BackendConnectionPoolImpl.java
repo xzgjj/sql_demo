@@ -91,24 +91,26 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
             }
         }
 
-        // Wait for idle connection
-        try {
-            conn = queue.poll(borrowTimeoutMs, TimeUnit.MILLISECONDS);
+        // Wait for idle connection with bounded retry
+        for (int retries = 0; retries < 3; retries++) {
+            try {
+                conn = queue.poll(borrowTimeoutMs, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted while borrowing connection to " + id.name(), e);
+            }
             if (conn == null) {
                 throw new RuntimeException("Connection pool exhausted for " + id.name());
             }
-            if (!conn.healthy()) {
-                conn.close();
-                decActiveCount(id);
-                return borrow(id); // retry
+            if (conn.healthy()) {
+                conn.markBorrowed();
+                incActiveCount(id);
+                return conn;
             }
-            conn.markBorrowed();
-            incActiveCount(id);
-            return conn;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while borrowing connection to " + id.name(), e);
+            conn.close();
+            decActiveCount(id);
         }
+        throw new RuntimeException("No healthy connection available for " + id.name() + " after retries");
     }
 
     @Override
@@ -201,7 +203,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
 
         // Perform MySQL handshake + auth with backend
         BackendAuthHandler authHandler = new BackendAuthHandler(
-                cfg.username(), cfg.password(), connectTimeoutMs);
+                cfg.username(), cfg.password());
         channel.pipeline().addLast("backend-auth", authHandler);
 
         try {

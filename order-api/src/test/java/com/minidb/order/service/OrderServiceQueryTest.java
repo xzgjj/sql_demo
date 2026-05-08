@@ -23,13 +23,9 @@ class OrderServiceQueryTest {
     private OrderService orderService;
 
     @Autowired
-    private IdempotencyService idempotencyService;
-
-    @Autowired
     private JdbcTemplate jdbc;
 
     private long userId = 501L;
-    private String testOrderNo;
 
     @BeforeEach
     void setUp() {
@@ -110,7 +106,6 @@ class OrderServiceQueryTest {
     private void createTestOrder(String idempotencyKey) {
         var req = new CreateOrderRequest(userId,
             List.of(new CreateOrderRequest.OrderItemRequest(1001L, 1)), null);
-        var resp = orderService.createOrder(req, idempotencyKey);
-        testOrderNo = resp.orderNo();
+        orderService.createOrder(req, idempotencyKey);
     }
 }

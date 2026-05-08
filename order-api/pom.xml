@@ -19,7 +19,6 @@
         <mysql-connector.version>8.4.0</mysql-connector.version>
         <testcontainers.version>1.19.7</testcontainers.version>
         <springdoc.version>2.5.0</springdoc.version>
-        <druid.version>1.2.23</druid.version>
     </properties>
 
     <dependencyManagement>
@@ -72,13 +71,6 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Druid Connection Pool -->
-        <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>druid-spring-boot-3-starter</artifactId>
-            <version>${druid.version}</version>
-        </dependency>
-
         <!-- OpenAPI -->
         <dependency>
             <groupId>org.springdoc</groupId>
@@ -101,7 +93,7 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>test</scope>
+            <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>

@@ -1,7 +1,6 @@
 package com.minidb.mvcc;
 
 import java.time.Instant;
-import java.util.Arrays;
 
 public class TraceEvent {
     private final long sequence;

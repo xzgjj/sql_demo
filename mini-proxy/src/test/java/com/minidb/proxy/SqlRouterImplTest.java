@@ -1,11 +1,5 @@
 package com.minidb.proxy;
 
-import com.minidb.proxy.ParsedSql;
-import com.minidb.proxy.AltRouteType;
-import com.minidb.proxy.SqlType;
-import com.minidb.proxy.BackendConnection;
-import com.minidb.proxy.DataSourceId;
-import com.minidb.proxy.ProxySession;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,11 +34,6 @@ class SqlRouterImplTest {
     private static ParsedSql txBegin() {
         return new ParsedSql(SqlType.BEGIN, Set.of(), null,
                 null, AltRouteType.NONE, false, "BEGIN", false, true);
-    }
-
-    private static ParsedSql txCommit() {
-        return new ParsedSql(SqlType.COMMIT, Set.of(), null,
-                null, AltRouteType.NONE, false, "COMMIT", false, true);
     }
 
     private static ParsedSql selectWithShardKey(long userId) {
@@ -98,7 +87,7 @@ class SqlRouterImplTest {
 
         // first query binds to shard_0
         ParsedSql first = selectWithShardKey(100); // 100 % 2 = 0
-        RoutePlan plan1 = router.route(session, first);
+        router.route(session, first);
         // bind the session
         EmbeddedChannel ch = new EmbeddedChannel();
         BackendConnection conn = new BackendConnection(DataSourceId.shard(0), ch);

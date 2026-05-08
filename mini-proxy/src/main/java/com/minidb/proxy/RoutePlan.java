@@ -1,7 +1,5 @@
 package com.minidb.proxy;
 
-import com.minidb.proxy.DataSourceId;
-
 public record RoutePlan(DataSourceId dataSourceId, Integer shardId, boolean sessionOnly) {
 
     public static RoutePlan sessionOnlyPlan() {

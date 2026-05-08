@@ -22,13 +22,11 @@ public class BackendAuthHandler extends ChannelInboundHandlerAdapter {
     private final String username;
     private final String password;
     private final CompletableFuture<Boolean> authFuture;
-    private final long timeoutMs;
     private boolean authStarted;
 
-    public BackendAuthHandler(String username, String password, long timeoutMs) {
+    public BackendAuthHandler(String username, String password) {
         this.username = username;
         this.password = password;
-        this.timeoutMs = timeoutMs;
         this.authFuture = new CompletableFuture<>();
     }
 

@@ -1,9 +1,5 @@
 package com.minidb.mvcc;
 
-import com.minidb.mvcc.WriteConflictException;
-import com.minidb.mvcc.IsolationLevel;
-import com.minidb.mvcc.Transaction;
-import com.minidb.mvcc.TransactionManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

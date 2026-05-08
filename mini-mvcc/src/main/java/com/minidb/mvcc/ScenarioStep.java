@@ -1,8 +1,5 @@
 package com.minidb.mvcc;
 
-import com.minidb.mvcc.IsolationLevel;
-
-import java.util.List;
 import java.util.Objects;
 
 public class ScenarioStep {

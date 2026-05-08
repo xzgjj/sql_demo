@@ -1,8 +1,6 @@
 package com.minidb.order.service;
 
 import com.minidb.order.BusinessException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -12,7 +10,6 @@ import java.util.List;
 
 @Service
 public class ProductService {
-    private static final Logger log = LoggerFactory.getLogger(ProductService.class);
     private final JdbcTemplate jdbc;
 
     public ProductService(JdbcTemplate jdbc) {

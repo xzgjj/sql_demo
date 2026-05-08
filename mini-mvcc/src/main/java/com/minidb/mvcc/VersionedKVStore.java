@@ -1,12 +1,5 @@
 package com.minidb.mvcc;
 
-import com.minidb.mvcc.WriteConflictException;
-import com.minidb.mvcc.IsolationLevel;
-import com.minidb.mvcc.Transaction;
-import com.minidb.mvcc.TransactionManager;
-import com.minidb.mvcc.UndoLogRecord;
-import com.minidb.mvcc.ReadView;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -15,6 +8,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class VersionedKVStore {
+    private static final int MAX_CHAIN_LENGTH = 1000;
+
     private final ConcurrentHashMap<String, RecordVersion> latestVersions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, RecordVersion> allVersions = new ConcurrentHashMap<>();
     private final AtomicLong versionIdSeq = new AtomicLong(1);
@@ -28,7 +23,12 @@ public class VersionedKVStore {
     public Optional<byte[]> get(Transaction txn, String key) {
         ReadView rv = resolveReadView(txn);
         RecordVersion current = latestVersions.get(key);
+        int depth = 0;
         while (current != null) {
+            if (++depth > MAX_CHAIN_LENGTH) {
+                throw new IllegalStateException(
+                        "Version chain exceeds max depth " + MAX_CHAIN_LENGTH + " for key: " + key);
+            }
             if (rv.isVisible(current.createdTxnId(), current.deletedTxnId())) {
                 return Optional.ofNullable(current.value());
             }
@@ -114,7 +114,12 @@ public class VersionedKVStore {
     public List<RecordVersion> versionChain(String key) {
         List<RecordVersion> chain = new ArrayList<>();
         RecordVersion current = latestVersions.get(key);
+        int depth = 0;
         while (current != null) {
+            if (++depth > MAX_CHAIN_LENGTH) {
+                throw new IllegalStateException(
+                        "Version chain exceeds max depth " + MAX_CHAIN_LENGTH + " for key: " + key);
+            }
             chain.add(current);
             if (current.undoPtr() == 0) {
                 break;

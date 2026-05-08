@@ -1,20 +1,10 @@
 package com.minidb.proxy;
 
-import com.minidb.proxy.ProxyConfig;
-import com.minidb.proxy.ParsedSql;
-import com.minidb.proxy.SqlParserImpl;
-import com.minidb.proxy.SqlType;
-import com.minidb.proxy.BackendConnection;
-import com.minidb.proxy.BackendConnectionPool;
 import com.minidb.proxy.protocol.AuthNativePassword;
 import com.minidb.proxy.protocol.HandshakeResponse41;
 import com.minidb.proxy.protocol.HandshakeV10;
 import com.minidb.proxy.protocol.MySqlPacket;
 import com.minidb.proxy.protocol.ResponsePackets;
-import com.minidb.proxy.RoutePlan;
-import com.minidb.proxy.SqlRouterImpl;
-import com.minidb.proxy.ConnectionState;
-import com.minidb.proxy.ProxySession;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;

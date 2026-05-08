@@ -1,8 +1,5 @@
 package com.minidb.mvcc;
 
-import com.minidb.mvcc.UndoLogRecord;
-import com.minidb.mvcc.ReadView;
-
 import java.util.ArrayList;
 import java.util.List;
 
