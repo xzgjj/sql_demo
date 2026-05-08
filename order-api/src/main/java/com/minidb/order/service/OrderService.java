@@ -86,13 +86,13 @@ public class OrderService {
         jdbc.update(conn -> {
             PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO orders (order_no, user_id, status, total_amount, remark, expires_at, version) VALUES (?,?,?,?,?,?,0)",
-                Statement.RETURN_GENERATED_KEYS);
+                new String[]{"id"});
             ps.setString(1, orderNo); ps.setLong(2, req.userId());
             ps.setInt(3, OrderStatus.PENDING_PAYMENT.getCode()); ps.setBigDecimal(4, finalAmount);
             ps.setString(5, req.remark()); ps.setObject(6, now.plusMinutes(paymentTimeoutMinutes));
             return ps;
         }, keyHolder);
-        long orderId = keyHolder.getKey().longValue();
+        long orderId = keyHolder.getKeyAs(Long.class);
 
         for (int i = 0; i < req.items().size(); i++) {
             var item = req.items().get(i);
@@ -178,6 +178,164 @@ public class OrderService {
         jdbc.update("INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload,status) VALUES (?,?,?,?,10)",
             eventType, aggregateType, aggregateId, payload);
     }
+
+    // ---- Query methods ----
+
+    public OrderListPage listOrders(long userId, Integer status, int page, int pageSize) {
+        var conditions = new ArrayList<String>();
+        var params = new ArrayList<Object>();
+        conditions.add("user_id = ?");
+        params.add(userId);
+        if (status != null) {
+            conditions.add("status = ?");
+            params.add(status);
+        }
+        String whereClause = String.join(" AND ", conditions);
+
+        Long total = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM orders WHERE " + whereClause,
+            Long.class, params.toArray()
+        );
+
+        int offset = (page - 1) * pageSize;
+        var queryParams = new ArrayList<>(params);
+        queryParams.add(pageSize);
+        queryParams.add(offset);
+
+        var items = jdbc.query(
+            "SELECT o.id, o.order_no, o.status, o.total_amount, o.created_at, " +
+            "(SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count " +
+            "FROM orders o WHERE " + whereClause + " ORDER BY o.created_at DESC LIMIT ? OFFSET ?",
+            (rs, rowNum) -> new OrderSummary(
+                rs.getLong("id"), rs.getString("order_no"), rs.getInt("status"),
+                rs.getBigDecimal("total_amount"), rs.getInt("item_count"),
+                rs.getTimestamp("created_at").toLocalDateTime()
+            ),
+            queryParams.toArray()
+        );
+
+        return new OrderListPage(items, page, pageSize, total != null ? total : 0);
+    }
+
+    public OrderDetail getOrder(long orderId) {
+        var rows = jdbc.query(
+            "SELECT id, order_no, user_id, status, total_amount, paid_amount, remark, " +
+            "expires_at, paid_at, cancelled_at, completed_at, created_at " +
+            "FROM orders WHERE id = ?",
+            (rs, rowNum) -> new Object[]{rs.getLong("id"), rs.getString("order_no"),
+                rs.getLong("user_id"), rs.getInt("status"), rs.getBigDecimal("total_amount"),
+                rs.getBigDecimal("paid_amount"), rs.getString("remark"),
+                rs.getTimestamp("expires_at"), rs.getTimestamp("paid_at"),
+                rs.getTimestamp("cancelled_at"), rs.getTimestamp("completed_at"),
+                rs.getTimestamp("created_at")},
+            orderId
+        );
+        if (rows.isEmpty()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
+        return buildDetail(rows.get(0));
+    }
+
+    public OrderDetail getOrderByNo(String orderNo) {
+        var rows = jdbc.query(
+            "SELECT id, order_no, user_id, status, total_amount, paid_amount, remark, " +
+            "expires_at, paid_at, cancelled_at, completed_at, created_at " +
+            "FROM orders WHERE order_no = ?",
+            (rs, rowNum) -> new Object[]{rs.getLong("id"), rs.getString("order_no"),
+                rs.getLong("user_id"), rs.getInt("status"), rs.getBigDecimal("total_amount"),
+                rs.getBigDecimal("paid_amount"), rs.getString("remark"),
+                rs.getTimestamp("expires_at"), rs.getTimestamp("paid_at"),
+                rs.getTimestamp("cancelled_at"), rs.getTimestamp("completed_at"),
+                rs.getTimestamp("created_at")},
+            orderNo
+        );
+        if (rows.isEmpty()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderNo);
+        return buildDetail(rows.get(0));
+    }
+
+    private OrderDetail buildDetail(Object[] row) {
+        long orderId = (long) row[0]; String orderNo = (String) row[1];
+        long userId = (long) row[2]; int status = (int) row[3];
+
+        var items = jdbc.query(
+            "SELECT product_id, product_sku, product_name, unit_price, quantity, line_amount " +
+            "FROM order_items WHERE order_id = ?",
+            (rs, rn) -> new OrderItemInfo(rs.getLong("product_id"), rs.getString("product_sku"),
+                rs.getString("product_name"), rs.getBigDecimal("unit_price"),
+                rs.getInt("quantity"), rs.getBigDecimal("line_amount")),
+            orderId
+        );
+
+        var payments = jdbc.query(
+            "SELECT payment_no, channel, amount, status, paid_at FROM payments WHERE order_id = ? LIMIT 1",
+            (rs) -> rs.next() ? new PaymentInfo(rs.getString("payment_no"), rs.getString("channel"),
+                rs.getBigDecimal("amount"), rs.getInt("status"),
+                rs.getTimestamp("paid_at") != null ? rs.getTimestamp("paid_at").toLocalDateTime() : null) : null,
+            orderId
+        );
+
+        var fulfillments = jdbc.query(
+            "SELECT ft.task_no, ft.status, ft.assignee_id, ft.claimed_at, ft.shipped_at, " +
+            "s.carrier, s.tracking_no FROM fulfillment_tasks ft " +
+            "LEFT JOIN shipments s ON s.task_id = ft.id WHERE ft.order_id = ? LIMIT 1",
+            (rs) -> rs.next() ? new FulfillmentInfo(rs.getString("task_no"), rs.getInt("status"),
+                (Long) rs.getObject("assignee_id"),
+                rs.getTimestamp("claimed_at") != null ? rs.getTimestamp("claimed_at").toLocalDateTime() : null,
+                rs.getTimestamp("shipped_at") != null ? rs.getTimestamp("shipped_at").toLocalDateTime() : null,
+                rs.getString("carrier"), rs.getString("tracking_no")) : null,
+            orderId
+        );
+
+        var timeline = jdbc.query(
+            "SELECT from_status, to_status, operator, reason, created_at " +
+            "FROM order_status_logs WHERE order_id = ? ORDER BY created_at",
+            (rs, rn) -> new StatusLogEntry(
+                (Integer) rs.getObject("from_status"), rs.getInt("to_status"),
+                rs.getString("operator"), rs.getString("reason"),
+                rs.getTimestamp("created_at").toLocalDateTime()),
+            orderId
+        );
+
+        return new OrderDetail(orderId, orderNo, userId, status,
+            (java.math.BigDecimal) row[4], (java.math.BigDecimal) row[5],
+            (String) row[6],
+            row[7] != null ? ((java.sql.Timestamp) row[7]).toLocalDateTime() : null,
+            row[8] != null ? ((java.sql.Timestamp) row[8]).toLocalDateTime() : null,
+            row[9] != null ? ((java.sql.Timestamp) row[9]).toLocalDateTime() : null,
+            row[10] != null ? ((java.sql.Timestamp) row[10]).toLocalDateTime() : null,
+            ((java.sql.Timestamp) row[11]).toLocalDateTime(),
+            items, payments, fulfillments, timeline);
+    }
+
+    // ---- DTOs ----
+
+    public record OrderSummary(long orderId, String orderNo, int status,
+                               java.math.BigDecimal totalAmount, int itemCount,
+                               java.time.LocalDateTime createdAt) {}
+
+    public record OrderDetail(long orderId, String orderNo, long userId, int status,
+                              java.math.BigDecimal totalAmount, java.math.BigDecimal paidAmount,
+                              String remark, java.time.LocalDateTime expiresAt,
+                              java.time.LocalDateTime paidAt, java.time.LocalDateTime cancelledAt,
+                              java.time.LocalDateTime completedAt, java.time.LocalDateTime createdAt,
+                              java.util.List<OrderItemInfo> items, PaymentInfo payment,
+                              FulfillmentInfo fulfillment,
+                              java.util.List<StatusLogEntry> statusTimeline) {}
+
+    public record OrderItemInfo(long productId, String productSku, String productName,
+                                java.math.BigDecimal unitPrice, int quantity,
+                                java.math.BigDecimal lineAmount) {}
+
+    public record PaymentInfo(String paymentNo, String channel, java.math.BigDecimal amount,
+                              int status, java.time.LocalDateTime paidAt) {}
+
+    public record FulfillmentInfo(String taskNo, int status, Long assigneeId,
+                                  java.time.LocalDateTime claimedAt,
+                                  java.time.LocalDateTime shippedAt,
+                                  String carrier, String trackingNo) {}
+
+    public record StatusLogEntry(Integer fromStatus, int toStatus, String operator,
+                                  String reason, java.time.LocalDateTime createdAt) {}
+
+    public record OrderListPage(java.util.List<OrderSummary> items, int page, int pageSize, long total) {}
 
     private record ProductSnapshot(long id, String sku, String name, BigDecimal price, int status) {}
 }
