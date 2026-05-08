@@ -26,5 +26,9 @@ logs/*
 *.out
 *.err
 
+# Build caches
+*.tsbuildinfo
+web-console/.vite/
+
 # Local-only design previews and visual references
 design-preview/
