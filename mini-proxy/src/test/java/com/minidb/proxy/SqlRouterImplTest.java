@@ -21,8 +21,20 @@ class SqlRouterImplTest {
 
     @BeforeEach
     void setUp() {
-        router = new SqlRouterImpl(2, 3000);
+        router = new SqlRouterImpl(4, 3000);
         session = new ProxySession(new EmbeddedChannel());
+    }
+
+    private static ParsedSql primaryOnlySql() {
+        return new ParsedSql(SqlType.INSERT, Set.of("idempotency_records"), null,
+                null, AltRouteType.NONE, true,
+                "INSERT INTO idempotency_records (idempotency_key) VALUES ('k1')", false, false);
+    }
+
+    private static ParsedSql altRouteSql(AltRouteType type, String key) {
+        return new ParsedSql(SqlType.SELECT, Set.of("orders"), null,
+                key, type, false,
+                "SELECT * FROM orders WHERE " + type.name().toLowerCase() + " = '" + key + "'", false, false);
     }
 
     private static ParsedSql txBegin() {
@@ -155,5 +167,45 @@ class SqlRouterImplTest {
                 null, AltRouteType.NONE, false, "INSERT INTO t VALUES (1)", false, false);
         RoutePlan plan = router.route(session, insert);
         assertEquals(DataSourceId.PRIMARY, plan.dataSourceId());
+    }
+
+    @Test
+    void shouldRoutePrimaryOnlyTableToPrimary() {
+        ParsedSql sql = primaryOnlySql();
+        RoutePlan plan = router.route(session, sql);
+        assertEquals(DataSourceId.PRIMARY, plan.dataSourceId());
+        assertNull(plan.shardId());
+    }
+
+    @Test
+    void shouldRoutePrimaryOnlyTableToPrimaryEvenInTransaction() {
+        session.beginTransaction();
+        // bind to shard first
+        EmbeddedChannel ch = new EmbeddedChannel();
+        BackendConnection conn = new BackendConnection(DataSourceId.shard(0), ch);
+        session.bind(0, conn);
+
+        ParsedSql sql = primaryOnlySql();
+        RoutePlan plan = router.route(session, sql);
+        assertEquals(DataSourceId.PRIMARY, plan.dataSourceId());
+        ch.close();
+    }
+
+    @Test
+    void shouldThrowMissingShardKeyWhenAltRouteWithoutLookup() {
+        // altRouteKey is set but no RouteTableLookup → should throw MISSING_SHARD_KEY
+        ParsedSql sql = altRouteSql(AltRouteType.ORDER_NO, "ORD123");
+        // Outside tx: shardKey=null, no lookup → uses fallback primary
+        RoutePlan plan = router.route(session, sql);
+        assertEquals(DataSourceId.REPLICA, plan.dataSourceId());
+        assertNull(plan.shardId());
+    }
+
+    @Test
+    void shouldRouteShard4Correctly() {
+        assertEquals(0, router.route(session, insertWithShardKey(100)).shardId()); // 100%4=0
+        assertEquals(1, router.route(session, insertWithShardKey(101)).shardId()); // 101%4=1
+        assertEquals(2, router.route(session, insertWithShardKey(102)).shardId()); // 102%4=2
+        assertEquals(3, router.route(session, insertWithShardKey(103)).shardId()); // 103%4=3
     }
 }

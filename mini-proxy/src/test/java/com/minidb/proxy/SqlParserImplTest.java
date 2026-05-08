@@ -111,4 +111,46 @@ class SqlParserImplTest {
         assertTrue(parser.parse("SELECT 1").isRead());
         assertFalse(parser.parse("INSERT INTO t VALUES (1)").isRead());
     }
+
+    @Test
+    void shouldExtractOrderNoFromWhere() {
+        ParsedSql result = parser.parse("SELECT * FROM orders WHERE order_no = 'ORD123'");
+        assertTrue(result.hasAltRouteKey());
+        assertEquals(AltRouteType.ORDER_NO, result.altRouteType());
+        assertEquals("ORD123", result.altRouteKey());
+        assertNull(result.shardKey()); // no user_id
+    }
+
+    @Test
+    void shouldExtractPaymentNoFromWhere() {
+        ParsedSql result = parser.parse("SELECT * FROM payments WHERE payment_no = 'PAY456'");
+        assertTrue(result.hasAltRouteKey());
+        assertEquals(AltRouteType.PAYMENT_NO, result.altRouteType());
+        assertEquals("PAY456", result.altRouteKey());
+    }
+
+    @Test
+    void shouldPreferUserIdOverAltRoute() {
+        ParsedSql result = parser.parse(
+                "SELECT * FROM orders WHERE user_id = 100 AND order_no = 'ORD123'");
+        assertEquals(100L, result.shardKey()); // user_id takes priority
+    }
+
+    @Test
+    void shouldDetectPrimaryOnlyTable() {
+        ParsedSql result = parser.parse("SELECT * FROM idempotency_records WHERE idempotency_key = 'key1'");
+        assertTrue(result.isPrimaryOnly());
+    }
+
+    @Test
+    void shouldDetectOrderRouteAsPrimaryOnly() {
+        ParsedSql result = parser.parse("INSERT INTO order_route (order_no, user_id) VALUES ('ORD1', 100)");
+        assertTrue(result.isPrimaryOnly());
+    }
+
+    @Test
+    void shouldNotMarkShardedTableAsPrimaryOnly() {
+        ParsedSql result = parser.parse("SELECT * FROM orders WHERE user_id = 100");
+        assertFalse(result.isPrimaryOnly());
+    }
 }
