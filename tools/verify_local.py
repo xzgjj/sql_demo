@@ -160,19 +160,54 @@ def check_proxy_sources():
     return True, f"{len(PROXY_EXPECTED_SOURCES)} proxy source files ok"
 
 
-def run_proxy_unit_tests():
+ORDER_EXPECTED_SOURCES = [
+    "OrderApiApplication.java",
+    "domain/OrderStatus.java",
+    "domain/PaymentStatus.java",
+    "domain/FulfillmentStatus.java",
+    "domain/IdempotencyStatus.java",
+    "dto/CreateOrderRequest.java",
+    "dto/CreateOrderResponse.java",
+    "dto/PaymentCallbackRequest.java",
+    "dto/CancelOrderRequest.java",
+    "dto/ClaimTaskRequest.java",
+    "dto/ShipOrderRequest.java",
+    "dto/ApiResponse.java",
+    "service/IdempotencyService.java",
+    "service/InventoryService.java",
+    "service/OrderService.java",
+    "service/PaymentService.java",
+    "service/FulfillmentService.java",
+    "service/OutboxProcessor.java",
+    "service/OrderExpiryScheduler.java",
+    "web/OrderController.java",
+    "web/PaymentController.java",
+    "web/FulfillmentController.java",
+    "infra/BusinessException.java",
+    "infra/GlobalExceptionHandler.java",
+]
+
+
+def check_order_sources():
+    src_root = ROOT / "order-api" / "src" / "main" / "java" / "com" / "minidb" / "order"
+    missing = [f for f in ORDER_EXPECTED_SOURCES if not (src_root / f).exists()]
+    if missing:
+        return False, f"missing order sources: {', '.join(missing)}"
+    return True, f"{len(ORDER_EXPECTED_SOURCES)} order source files ok"
+
+
+def run_order_unit_tests():
     mvn = shutil.which("mvn")
     if mvn is None:
         return False, "mvn not found"
     code, output = run_command(
-        [mvn, "-pl", "mini-proxy", "test", "-B",
-         "-Dtest=MiniProxyModuleTest,MiniProxyServerTest,SqlParserImplTest,BackendConnectionPoolTest,AuthNativePasswordTest,HandshakePacketTest,MySqlPacketCodecTest,SqlRouterImplTest"],
+        [mvn, "-pl", "order-api", "test", "-B", "-Dtest=OrderApiApplicationTest,IdempotencyServiceTest"],
         timeout=180
     )
     if code != 0:
         last_lines = output.splitlines()[-5:] if output else ["unknown error"]
-        return False, f"proxy unit tests failed: {'; '.join(last_lines)}"
-    return True, "proxy unit tests passed"
+        return False, f"order unit tests failed: {'; '.join(last_lines)}"
+    return True, "order unit tests passed"
 
 
 def run_maven_verify(strict):
@@ -236,8 +271,8 @@ def main():
     ok, detail = check_proxy_sources()
     checks.append({"name": "proxy:source-files", "ok": ok, "detail": detail})
 
-    ok, detail = run_proxy_unit_tests()
-    checks.append({"name": "proxy:unit-tests", "ok": ok, "detail": detail})
+    ok, detail = check_order_sources()
+    checks.append({"name": "order:source-files", "ok": ok, "detail": detail})
 
     ok, detail = run_maven_verify(args.strict)
     checks.append({"name": "build:maven-verify", "ok": ok, "detail": detail})

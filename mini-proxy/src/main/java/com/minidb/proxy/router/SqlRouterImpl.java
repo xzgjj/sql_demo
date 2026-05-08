@@ -115,6 +115,7 @@ public class SqlRouterImpl {
         Integer shardId = resolveShardId(sql);
         return shardId != null ? DataSourceId.shard(shardId) : fallback;
     }
+    private Integer resolveShardId(ParsedSql sql) {
         Long key = sql.shardKey();
         if (key == null) return null;
         return (int) (key % shardCount);

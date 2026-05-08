@@ -17,7 +17,7 @@ class BackendConnectionPoolTest {
     @BeforeEach
     void setUp() {
         workerGroup = new NioEventLoopGroup(1);
-        pool = new BackendConnectionPoolImpl(5000, 600_000, workerGroup);
+        pool = new BackendConnectionPoolImpl(5000, 600_000, 5000, workerGroup);
     }
 
     @AfterEach
