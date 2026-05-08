@@ -222,12 +222,13 @@ public class OrderService {
             "SELECT id, order_no, user_id, status, total_amount, paid_amount, remark, " +
             "expires_at, paid_at, cancelled_at, completed_at, created_at " +
             "FROM orders WHERE id = ?",
-            (rs, rowNum) -> new Object[]{rs.getLong("id"), rs.getString("order_no"),
+            (rs, rowNum) -> new OrderRow(
+                rs.getLong("id"), rs.getString("order_no"),
                 rs.getLong("user_id"), rs.getInt("status"), rs.getBigDecimal("total_amount"),
                 rs.getBigDecimal("paid_amount"), rs.getString("remark"),
                 rs.getTimestamp("expires_at"), rs.getTimestamp("paid_at"),
                 rs.getTimestamp("cancelled_at"), rs.getTimestamp("completed_at"),
-                rs.getTimestamp("created_at")},
+                rs.getTimestamp("created_at")),
             orderId
         );
         if (rows.isEmpty()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
@@ -239,21 +240,22 @@ public class OrderService {
             "SELECT id, order_no, user_id, status, total_amount, paid_amount, remark, " +
             "expires_at, paid_at, cancelled_at, completed_at, created_at " +
             "FROM orders WHERE order_no = ?",
-            (rs, rowNum) -> new Object[]{rs.getLong("id"), rs.getString("order_no"),
+            (rs, rowNum) -> new OrderRow(
+                rs.getLong("id"), rs.getString("order_no"),
                 rs.getLong("user_id"), rs.getInt("status"), rs.getBigDecimal("total_amount"),
                 rs.getBigDecimal("paid_amount"), rs.getString("remark"),
                 rs.getTimestamp("expires_at"), rs.getTimestamp("paid_at"),
                 rs.getTimestamp("cancelled_at"), rs.getTimestamp("completed_at"),
-                rs.getTimestamp("created_at")},
+                rs.getTimestamp("created_at")),
             orderNo
         );
         if (rows.isEmpty()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderNo);
         return buildDetail(rows.get(0));
     }
 
-    private OrderDetail buildDetail(Object[] row) {
-        long orderId = (long) row[0]; String orderNo = (String) row[1];
-        long userId = (long) row[2]; int status = (int) row[3];
+    private OrderDetail buildDetail(OrderRow r) {
+        long orderId = r.id; String orderNo = r.orderNo;
+        long userId = r.userId; int status = r.status;
 
         var items = jdbc.query(
             "SELECT product_id, product_sku, product_name, unit_price, quantity, line_amount " +
@@ -295,13 +297,12 @@ public class OrderService {
         );
 
         return new OrderDetail(orderId, orderNo, userId, status,
-            (java.math.BigDecimal) row[4], (java.math.BigDecimal) row[5],
-            (String) row[6],
-            row[7] != null ? ((java.sql.Timestamp) row[7]).toLocalDateTime() : null,
-            row[8] != null ? ((java.sql.Timestamp) row[8]).toLocalDateTime() : null,
-            row[9] != null ? ((java.sql.Timestamp) row[9]).toLocalDateTime() : null,
-            row[10] != null ? ((java.sql.Timestamp) row[10]).toLocalDateTime() : null,
-            ((java.sql.Timestamp) row[11]).toLocalDateTime(),
+            r.totalAmount, r.paidAmount, r.remark,
+            r.expiresAt != null ? r.expiresAt.toLocalDateTime() : null,
+            r.paidAt != null ? r.paidAt.toLocalDateTime() : null,
+            r.cancelledAt != null ? r.cancelledAt.toLocalDateTime() : null,
+            r.completedAt != null ? r.completedAt.toLocalDateTime() : null,
+            r.createdAt.toLocalDateTime(),
             items, payments, fulfillments, timeline);
     }
 
@@ -336,6 +337,12 @@ public class OrderService {
                                   String reason, java.time.LocalDateTime createdAt) {}
 
     public record OrderListPage(java.util.List<OrderSummary> items, int page, int pageSize, long total) {}
+
+    private record OrderRow(long id, String orderNo, long userId, int status,
+                              BigDecimal totalAmount, BigDecimal paidAmount, String remark,
+                              java.sql.Timestamp expiresAt, java.sql.Timestamp paidAt,
+                              java.sql.Timestamp cancelledAt, java.sql.Timestamp completedAt,
+                              java.sql.Timestamp createdAt) {}
 
     private record ProductSnapshot(long id, String sku, String name, BigDecimal price, int status) {}
 }

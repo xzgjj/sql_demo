@@ -74,20 +74,20 @@ public class ExceptionService {
 
     @Transactional
     public void resolveException(long id, String resolution) {
-        int affected = jdbc.update(
-            "UPDATE exception_tickets SET status = 30, detail = COALESCE(CONCAT(detail, ?), ?) WHERE id = ? AND status = 10",
-            "\n[RESOLVED] " + resolution, "\n[RESOLVED] " + resolution, id
+        var existing = jdbc.query(
+            "SELECT status, detail FROM exception_tickets WHERE id = ?",
+            rs -> rs.next() ? new Object[]{rs.getInt("status"), rs.getString("detail")} : null,
+            id
         );
-        if (affected == 0) {
-            var current = jdbc.query(
-                "SELECT status FROM exception_tickets WHERE id = ?",
-                rs -> rs.next() ? rs.getInt("status") : null,
-                id
-            );
-            if (current == null) throw new BusinessException("EXCEPTION_NOT_FOUND", "Exception not found: " + id);
+        if (existing == null) throw new BusinessException("EXCEPTION_NOT_FOUND", "Exception not found: " + id);
+        if ((int) existing[0] != 10)
             throw new BusinessException("EXCEPTION_STATUS_CHANGED",
-                "Exception already resolved or in progress, status: " + current);
-        }
+                "Exception already resolved or in progress, status: " + existing[0]);
+
+        String oldDetail = (String) existing[1];
+        String newDetail = (oldDetail != null ? oldDetail : "") + "\n[RESOLVED] " + resolution;
+        jdbc.update("UPDATE exception_tickets SET status = 30, detail = ? WHERE id = ? AND status = 10",
+            newDetail, id);
         log.info("Exception ticket {} resolved: {}", id, resolution);
     }
 }

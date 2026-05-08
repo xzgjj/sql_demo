@@ -37,9 +37,10 @@ public class ExceptionController {
     }
 
     @PostMapping("/{id}/resolve")
-    @Operation(summary = "解决异常工单", description = "将状态从OPEN变为RESOLVED，记录处理备注。")
+    @Operation(summary = "解决异常工单", description = "将状态从OPEN变为RESOLVED，记录处理备注。必须携带 Idempotency-Key。")
     public ResponseEntity<ApiResponse<Void>> resolveException(
             @PathVariable long id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestBody Map<String, String> body) {
         exceptionService.resolveException(id, body.getOrDefault("resolution", "Manual resolution"));
         return ResponseEntity.ok(ApiResponse.ok(null));

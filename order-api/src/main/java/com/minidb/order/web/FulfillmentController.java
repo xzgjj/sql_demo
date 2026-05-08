@@ -46,10 +46,11 @@ public class FulfillmentController {
     }
 
     @PostMapping("/tasks/{taskId}/pick")
-    @Operation(summary = "拣货完成", description = "将任务从PICKING变为PICKED。只有当前认领人可操作。")
+    @Operation(summary = "拣货完成", description = "将任务从PICKING变为PICKED。只有当前认领人可操作。必须携带 Idempotency-Key。")
     public ResponseEntity<ApiResponse<Void>> pickTask(
             @PathVariable Long taskId,
-            @RequestHeader("X-User-Id") Long userId) {
+            @RequestHeader("X-User-Id") Long userId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
         fulfillmentService.pickTask(taskId, userId);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
