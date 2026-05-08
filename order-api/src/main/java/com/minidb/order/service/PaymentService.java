@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -42,6 +43,7 @@ public class PaymentService {
         this.mockSignSecret = mockSignSecret;
     }
 
+    @Transactional
     public String createPayment(Long orderId, Long userId, String channel) {
         var order = jdbc.query(
             "SELECT order_no, status, total_amount FROM orders WHERE id = ? AND user_id = ?",
@@ -64,6 +66,7 @@ public class PaymentService {
         return paymentNo;
     }
 
+    @Transactional
     public void handleCallback(PaymentCallbackRequest req) {
         log.info("Payment callback: paymentNo={}, amount={}", req.paymentNo(), req.amount());
         if (!verifySignature(req)) throw new BusinessException("PAYMENT_SIGNATURE_INVALID", "Invalid payment signature");

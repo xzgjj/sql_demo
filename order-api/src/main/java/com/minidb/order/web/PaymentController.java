@@ -23,9 +23,9 @@ public class PaymentController {
     @PostMapping("/orders/{orderId}/payments")
     @Operation(summary = "创建支付单")
     public ResponseEntity<ApiResponse<Map<String, String>>> createPayment(
-            @PathVariable Long orderId,
+            @PathVariable("orderId") Long orderId,
             @RequestHeader("X-User-Id") Long userId,
-            @RequestParam(defaultValue = "mock_pay") String channel) {
+            @RequestParam(name = "channel", defaultValue = "mock_pay") String channel) {
         String paymentNo = paymentService.createPayment(orderId, userId, channel);
         return ResponseEntity.ok(ApiResponse.ok(Map.of("paymentNo", paymentNo)));
     }

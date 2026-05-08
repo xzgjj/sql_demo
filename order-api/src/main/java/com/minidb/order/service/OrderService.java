@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
@@ -41,6 +42,7 @@ public class OrderService {
         this.paymentTimeoutMinutes = paymentTimeoutMinutes;
     }
 
+    @Transactional
     public CreateOrderResponse createOrder(CreateOrderRequest req, String idempotencyKey) {
         log.info("Creating order for user={}, items={}", req.userId(), req.items().size());
 
@@ -112,6 +114,7 @@ public class OrderService {
         return response;
     }
 
+    @Transactional
     public void cancelOrder(Long orderId, String reason, String idempotencyKey, Long operatorId) {
         String reqJson;
         try { reqJson = objectMapper.writeValueAsString(Map.of("orderId", orderId, "reason", reason)); }

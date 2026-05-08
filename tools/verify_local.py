@@ -20,6 +20,8 @@ EXPECTED_IGNORED = [
     "test/",
     "tests/",
     "target/",
+    "web-console/node_modules/",
+    "web-console/dist/",
 ]
 
 
@@ -188,11 +190,13 @@ ORDER_EXPECTED_SOURCES = [
     "service/OrderExpiryScheduler.java",
     "service/ProductService.java",
     "service/ExceptionService.java",
+    "service/ConsoleService.java",
     "web/OrderController.java",
     "web/PaymentController.java",
     "web/FulfillmentController.java",
     "web/ProductController.java",
     "web/ExceptionController.java",
+    "web/ConsoleController.java",
     "web/GlobalExceptionHandler.java",
 ]
 
@@ -210,7 +214,7 @@ def run_order_unit_tests():
     if mvn is None:
         return False, "mvn not found"
     code, output = run_command(
-        [mvn, "-pl", "order-api", "test", "-B"],
+        [mvn, "-pl", "order-api", "-am", "test", "-B"],
         timeout=180
     )
     if code != 0:
@@ -224,6 +228,60 @@ def run_order_unit_tests():
                 count = int(line.split("Tests run:")[1].split(",")[0].strip())
             except: pass
     return True, f"order unit tests passed ({count} tests)"
+
+
+WEB_EXPECTED_SOURCES = [
+    "package.json",
+    "package-lock.json",
+    "index.html",
+    "vite.config.ts",
+    "tsconfig.json",
+    "eslint.config.js",
+    "src/main.tsx",
+    "src/App.tsx",
+    "src/api.ts",
+    "src/i18n.ts",
+    "src/styles.css",
+    "src/App.test.tsx",
+    "src/test-setup.ts",
+]
+
+
+def check_web_console_sources():
+    root = ROOT / "web-console"
+    missing = [f for f in WEB_EXPECTED_SOURCES if not (root / f).exists()]
+    if missing:
+        return False, f"missing web-console files: {', '.join(missing)}"
+    return True, f"{len(WEB_EXPECTED_SOURCES)} web-console files ok"
+
+
+def run_web_console_command(script):
+    npm = shutil.which("npm")
+    if npm is None:
+        return False, "npm not found"
+    code, output = subprocess_run_in(ROOT / "web-console", [npm, "run", script], timeout=180)
+    if code != 0:
+        last_lines = output.splitlines()[-8:] if output else ["unknown error"]
+        return False, f"npm run {script} failed: {'; '.join(last_lines)}"
+    return True, f"npm run {script} passed"
+
+
+def subprocess_run_in(cwd, command, timeout=120):
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+        )
+        return completed.returncode, completed.stdout.strip()
+    except FileNotFoundError as exc:
+        return 127, str(exc)
+    except subprocess.TimeoutExpired as exc:
+        return 124, f"timeout after {exc.timeout}s"
 
 
 def run_maven_verify(strict):
@@ -292,6 +350,13 @@ def main():
 
     ok, detail = run_order_unit_tests()
     checks.append({"name": "order:unit-tests", "ok": ok, "detail": detail})
+
+    ok, detail = check_web_console_sources()
+    checks.append({"name": "web-console:source-files", "ok": ok, "detail": detail})
+
+    for script in ("lint", "test"):
+        ok, detail = run_web_console_command(script)
+        checks.append({"name": f"web-console:{script}", "ok": ok, "detail": detail})
 
     ok, detail = run_maven_verify(args.strict)
     checks.append({"name": "build:maven-verify", "ok": ok, "detail": detail})

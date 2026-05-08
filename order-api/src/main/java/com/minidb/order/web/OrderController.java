@@ -32,9 +32,9 @@ public class OrderController {
     @Operation(summary = "查询订单列表", description = "按用户ID查询订单，支持状态筛选和分页。")
     public ResponseEntity<ApiResponse<OrderService.OrderListPage>> listOrders(
             @RequestHeader("X-User-Id") Long userId,
-            @RequestParam(required = false) Integer status,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(name = "status", required = false) Integer status,
+            @RequestParam(name = "page", defaultValue = "1") int page,
+            @RequestParam(name = "pageSize", defaultValue = "20") int pageSize) {
         if (page < 1) page = 1;
         if (pageSize < 1 || pageSize > 100) pageSize = 20;
         return ResponseEntity.ok(ApiResponse.ok(orderService.listOrders(userId, status, page, pageSize)));
@@ -42,20 +42,20 @@ public class OrderController {
 
     @GetMapping("/{orderId}")
     @Operation(summary = "查询订单详情", description = "返回订单、明细、支付、履约和状态时间线。")
-    public ResponseEntity<ApiResponse<OrderService.OrderDetail>> getOrder(@PathVariable Long orderId) {
+    public ResponseEntity<ApiResponse<OrderService.OrderDetail>> getOrder(@PathVariable("orderId") Long orderId) {
         return ResponseEntity.ok(ApiResponse.ok(orderService.getOrder(orderId)));
     }
 
     @GetMapping("/by-no/{orderNo}")
     @Operation(summary = "按订单号查询", description = "根据订单号精确查找订单详情。")
-    public ResponseEntity<ApiResponse<OrderService.OrderDetail>> getOrderByNo(@PathVariable String orderNo) {
+    public ResponseEntity<ApiResponse<OrderService.OrderDetail>> getOrderByNo(@PathVariable("orderNo") String orderNo) {
         return ResponseEntity.ok(ApiResponse.ok(orderService.getOrderByNo(orderNo)));
     }
 
     @PostMapping("/{orderId}/cancel")
     @Operation(summary = "取消订单", description = "待支付取消释放库存，已支付取消进入退款中。已发货不可取消。")
     public ResponseEntity<ApiResponse<Void>> cancelOrder(
-            @PathVariable Long orderId,
+            @PathVariable("orderId") Long orderId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestHeader("X-User-Id") Long userId,
             @Valid @RequestBody CancelOrderRequest request) {

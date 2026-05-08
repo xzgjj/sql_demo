@@ -15,3 +15,16 @@ doc/
 
 # Build outputs
 target/
+web-console/node_modules/
+web-console/dist/
+
+# Local runtime logs. Keep only the directory policy in Git.
+logs/*
+!logs/
+!logs/README.md
+*.log
+*.out
+*.err
+
+# Local-only design previews and visual references
+design-preview/

@@ -195,8 +195,9 @@ public class FulfillmentService {
         // 6. 状态日志
         jdbc.update(
             "INSERT INTO order_status_logs (order_id, order_no, from_status, to_status, operator, reason) " +
-            "VALUES (?, ?, ?, ?, 'USER', 'Shipped via ' + ?)",
-            orderId, orderNo, OrderStatus.PENDING_FULFILLMENT.getCode(), OrderStatus.SHIPPED.getCode(), carrier
+            "VALUES (?, ?, ?, ?, 'USER', ?)",
+            orderId, orderNo, OrderStatus.PENDING_FULFILLMENT.getCode(), OrderStatus.SHIPPED.getCode(),
+            "Shipped via " + carrier
         );
 
         // 7. outbox
@@ -225,7 +226,8 @@ public class FulfillmentService {
 
     public record TaskSummary(long taskId, String taskNo, long userId, long orderId,
                               String orderNo, int status, Long assigneeId,
-                              java.time.LocalDateTime claimedAt, java.time.LocalDateTime createdAt) {}
+                              int version, java.time.LocalDateTime claimedAt,
+                              java.time.LocalDateTime createdAt) {}
 
     public TaskListPage listTasks(Integer status, int page, int pageSize) {
         var conditions = new java.util.ArrayList<String>();
@@ -248,13 +250,14 @@ public class FulfillmentService {
 
         var items = jdbc.query(
             "SELECT ft.id, ft.task_no, ft.user_id, ft.order_id, o.order_no, " +
-            "ft.status, ft.assignee_id, ft.claimed_at, ft.created_at " +
+            "ft.status, ft.assignee_id, ft.version, ft.claimed_at, ft.created_at " +
             "FROM fulfillment_tasks ft JOIN orders o ON ft.order_id = o.id " +
             "WHERE " + whereClause + " ORDER BY ft.created_at DESC LIMIT ? OFFSET ?",
             (rs, rowNum) -> new TaskSummary(
                 rs.getLong("id"), rs.getString("task_no"), rs.getLong("user_id"),
                 rs.getLong("order_id"), rs.getString("order_no"), rs.getInt("status"),
                 (Long) rs.getObject("assignee_id"),
+                rs.getInt("version"),
                 rs.getTimestamp("claimed_at") != null ? rs.getTimestamp("claimed_at").toLocalDateTime() : null,
                 rs.getTimestamp("created_at").toLocalDateTime()
             ),

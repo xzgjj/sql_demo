@@ -45,6 +45,8 @@ management:
       show-details: when_authorized
 
 minidb:
+  console:
+    demo-enabled: true
   payment:
     mock-sign-secret: minidb-mock-pay-secret-key-2026
   order:

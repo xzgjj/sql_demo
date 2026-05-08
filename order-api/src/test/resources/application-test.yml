@@ -9,5 +9,9 @@ spring:
   sql:
     init:
       mode: always
-      schema-locations: classpath:db/migration/V001__init_schema.sql
+      schema-locations: classpath:db/migration/V001__init_schema.sql,classpath:db/migration/V003__order_route.sql
       data-locations: classpath:db/migration/V002__seed_data.sql
+
+minidb:
+  console:
+    demo-enabled: true

@@ -22,9 +22,9 @@ public class ExceptionController {
     @GetMapping
     @Operation(summary = "查询异常工单列表", description = "按状态筛选，支持分页。10=OPEN, 20=IN_PROGRESS, 30=RESOLVED, 40=CLOSED")
     public ResponseEntity<ApiResponse<ExceptionService.ExceptionListPage>> listExceptions(
-            @RequestParam(required = false) Integer status,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(name = "status", required = false) Integer status,
+            @RequestParam(name = "page", defaultValue = "1") int page,
+            @RequestParam(name = "pageSize", defaultValue = "20") int pageSize) {
         if (page < 1) page = 1;
         if (pageSize < 1 || pageSize > 100) pageSize = 20;
         return ResponseEntity.ok(ApiResponse.ok(exceptionService.listExceptions(status, page, pageSize)));
@@ -32,14 +32,14 @@ public class ExceptionController {
 
     @GetMapping("/{id}")
     @Operation(summary = "查询异常工单详情")
-    public ResponseEntity<ApiResponse<ExceptionService.ExceptionItem>> getException(@PathVariable long id) {
+    public ResponseEntity<ApiResponse<ExceptionService.ExceptionItem>> getException(@PathVariable("id") long id) {
         return ResponseEntity.ok(ApiResponse.ok(exceptionService.getException(id)));
     }
 
     @PostMapping("/{id}/resolve")
     @Operation(summary = "解决异常工单", description = "将状态从OPEN变为RESOLVED，记录处理备注。必须携带 Idempotency-Key。")
     public ResponseEntity<ApiResponse<Void>> resolveException(
-            @PathVariable long id,
+            @PathVariable("id") long id,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestBody Map<String, String> body) {
         exceptionService.resolveException(id, body.getOrDefault("resolution", "Manual resolution"));

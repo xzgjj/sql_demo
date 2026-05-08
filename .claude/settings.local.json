@@ -54,7 +54,19 @@
       "Bash(echo \"test commit\")",
       "Bash(sh .git/hooks/commit-msg /tmp/test-commit-msg)",
       "Bash(echo 'Co-authored-by: Claude Opus 4.7 <noreply@anthropic.com>')",
-      "Bash(sh .git/hooks/commit-msg /tmp/test-bad)"
+      "Bash(sh .git/hooks/commit-msg /tmp/test-bad)",
+      "WebFetch(domain:shardingsphere.apache.org)",
+      "WebFetch(domain:vitess.io)",
+      "Bash(mvn -pl order-api test -B -Dtest=ProductServiceTest)",
+      "Bash(mvn -pl order-api test -B -Dtest=OrderServiceQueryTest)",
+      "Bash(mvn -pl order-api test -B)",
+      "Bash(mvn -pl order-api test -B -Dtest=FulfillmentServiceTest)",
+      "Bash(mvn -pl order-api test -B -Dtest=ExceptionServiceTest)",
+      "Bash(mvn -pl order-api test -B -Dtest=OrderApiApplicationTest)",
+      "Bash(mvn -pl order-api clean test -B)",
+      "Bash(mvn -B compile)",
+      "Bash(mvn -B test)",
+      "Bash(mvn -B compile -pl mini-proxy)"
     ]
   }
 }

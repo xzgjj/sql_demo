@@ -1,0 +1,202 @@
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #f5f7fb;
+  color: #111827;
+}
+
+.app-shell {
+  min-height: 100%;
+}
+
+.app-sider {
+  background: #ffffff !important;
+  border-right: 1px solid #e5e7eb;
+}
+
+.brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 18px;
+  font-size: 17px;
+}
+
+.brand span {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.app-sider .ant-menu-item-group-title {
+  padding: 16px 24px 6px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.side-status {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #64748b;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+  padding: 0 24px;
+  gap: 16px;
+  line-height: normal;
+  background: rgba(255, 255, 255, 0.88);
+  border-bottom: 1px solid #e5e7eb;
+  backdrop-filter: blur(14px);
+  box-sizing: border-box;
+}
+
+.global-search {
+  width: min(560px, 58vw);
+  min-width: 240px;
+  max-width: 560px;
+  flex: 1 1 420px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 12px;
+}
+
+.language-switch {
+  display: flex;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.language-switch .ant-radio-button-wrapper {
+  height: 36px;
+  line-height: 34px;
+}
+
+.full {
+  width: 100%;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.ops-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.95fr) minmax(320px, 1.2fr);
+  gap: 16px;
+}
+
+.wide-left {
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+}
+
+.db-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.queue-item,
+.task-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.funnel-row,
+.rule-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.rule-row {
+  justify-content: flex-start;
+}
+
+.evidence-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.queue-item span,
+.task-card span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.kanban {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.top-gap {
+  margin-top: 16px;
+}
+
+.bottom-gap {
+  margin-bottom: 16px;
+}
+
+pre {
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  margin: 0;
+  color: #dbeafe;
+  background: #0f172a;
+  border-radius: 8px;
+}
+
+@media (max-width: 1100px) {
+  .metric-grid,
+  .two-col,
+  .ops-grid,
+  .db-status-grid,
+  .kanban {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    padding: 0 12px;
+    gap: 10px;
+  }
+
+  .global-search {
+    min-width: 0;
+  }
+}
