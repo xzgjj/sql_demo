@@ -12,7 +12,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -43,7 +42,6 @@ public class PaymentService {
         this.mockSignSecret = mockSignSecret;
     }
 
-    @Transactional
     public String createPayment(Long orderId, Long userId, String channel) {
         var order = jdbc.query(
             "SELECT order_no, status, total_amount FROM orders WHERE id = ? AND user_id = ?",
@@ -62,24 +60,32 @@ public class PaymentService {
             return ps;
         }, kh);
         log.info("Payment created: paymentNo={}, orderId={}", paymentNo, orderId);
+        bindPaymentRoute(paymentNo, (String) order[0]);
         return paymentNo;
     }
 
-    @Transactional
     public void handleCallback(PaymentCallbackRequest req) {
         log.info("Payment callback: paymentNo={}, amount={}", req.paymentNo(), req.amount());
         if (!verifySignature(req)) throw new BusinessException("PAYMENT_SIGNATURE_INVALID", "Invalid payment signature");
 
-        var info = jdbc.query(
-            "SELECT p.id, p.order_id, p.amount, p.status, o.order_no, o.status as order_status " +
-            "FROM payments p JOIN orders o ON p.order_id = o.id WHERE p.payment_no = ?",
+        // Split query for sharding: first find payment (proxy does route lookup via payment_no)
+        var paymentInfo = jdbc.query(
+            "SELECT id, order_id, user_id, amount, status FROM payments WHERE payment_no = ?",
             rs -> { if (!rs.next()) throw new BusinessException("PAYMENT_NOT_FOUND", "Payment not found");
-                return new Object[]{rs.getLong("id"), rs.getLong("order_id"), rs.getBigDecimal("amount"),
-                    rs.getInt("status"), rs.getString("order_no"), rs.getInt("order_status")}; },
+                return new Object[]{rs.getLong("id"), rs.getLong("order_id"),
+                    rs.getLong("user_id"), rs.getBigDecimal("amount"), rs.getInt("status")}; },
             req.paymentNo());
-        long paymentId = (long) info[0]; long orderId = (long) info[1];
-        BigDecimal expected = (BigDecimal) info[2]; int pStatus = (int) info[3];
-        String orderNo = (String) info[4];
+        long paymentId = (long) paymentInfo[0]; long orderId = (long) paymentInfo[1];
+        long userId = (long) paymentInfo[2];
+        BigDecimal expected = (BigDecimal) paymentInfo[3]; int pStatus = (int) paymentInfo[4];
+
+        // Then find order on same shard (both sharded by user_id)
+        var orderInfo = jdbc.query(
+            "SELECT order_no, status FROM orders WHERE id = ? AND user_id = ?",
+            rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found for payment");
+                return new Object[]{rs.getString("order_no"), rs.getInt("status")}; },
+            orderId, userId);
+        String orderNo = (String) orderInfo[0];
 
         if (pStatus == PaymentStatus.SUCCESS.getCode()) return;
 
@@ -130,6 +136,15 @@ public class PaymentService {
             mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
             return Base64.getEncoder().encodeToString(mac.doFinal(data.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException | InvalidKeyException e) { throw new RuntimeException("HMAC-SHA256 error", e); }
+    }
+
+    private void bindPaymentRoute(String paymentNo, String orderNo) {
+        try {
+            jdbc.update("UPDATE order_route SET payment_no = ?, biz_type = 'PAYMENT', updated_at = NOW() WHERE order_no = ?",
+                    paymentNo, orderNo);
+        } catch (Exception e) {
+            log.warn("Failed to bind payment route: paymentNo={}, orderNo={}: {}", paymentNo, orderNo, e.getMessage());
+        }
     }
 
     private void writeException(String bizType, String bizNo, String reasonCode, String detail) {

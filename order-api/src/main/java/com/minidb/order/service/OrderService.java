@@ -12,7 +12,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
@@ -42,7 +41,6 @@ public class OrderService {
         this.paymentTimeoutMinutes = paymentTimeoutMinutes;
     }
 
-    @Transactional
     public CreateOrderResponse createOrder(CreateOrderRequest req, String idempotencyKey) {
         log.info("Creating order for user={}, items={}", req.userId(), req.items().size());
 
@@ -103,6 +101,7 @@ public class OrderService {
 
         writeStatusLog(orderId, orderNo, null, OrderStatus.PENDING_PAYMENT, "SYSTEM", "Order created");
         writeOutbox("ORDER_CREATED", "ORDER", orderId, buildPayload(orderNo, null));
+        writeOrderRoute(orderNo, req.userId());
 
         CreateOrderResponse response = new CreateOrderResponse(orderId, orderNo, OrderStatus.PENDING_PAYMENT.getCode(), finalAmount, now.plusMinutes(paymentTimeoutMinutes));
         String respJson;
@@ -113,7 +112,6 @@ public class OrderService {
         return response;
     }
 
-    @Transactional
     public void cancelOrder(Long orderId, String reason, String idempotencyKey, Long operatorId) {
         String reqJson;
         try { reqJson = objectMapper.writeValueAsString(Map.of("orderId", orderId, "reason", reason)); }
@@ -176,6 +174,16 @@ public class OrderService {
     public void writeOutbox(String eventType, String aggregateType, long aggregateId, String payload) {
         jdbc.update("INSERT INTO outbox_events (event_type,aggregate_type,aggregate_id,payload,status) VALUES (?,?,?,?,10)",
             eventType, aggregateType, aggregateId, payload);
+    }
+
+    private void writeOrderRoute(String orderNo, long userId) {
+        try {
+            jdbc.update("INSERT INTO order_route (order_no, user_id, biz_type) VALUES (?, ?, 'ORDER') " +
+                        "ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), updated_at = NOW()",
+                    orderNo, userId);
+        } catch (Exception e) {
+            log.warn("Failed to write order_route for orderNo={}: {}", orderNo, e.getMessage());
+        }
     }
 
     // ---- Query methods ----
