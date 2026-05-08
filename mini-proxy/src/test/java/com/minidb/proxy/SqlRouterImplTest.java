@@ -1,6 +1,7 @@
 package com.minidb.proxy;
 
 import com.minidb.proxy.ParsedSql;
+import com.minidb.proxy.AltRouteType;
 import com.minidb.proxy.SqlType;
 import com.minidb.proxy.BackendConnection;
 import com.minidb.proxy.DataSourceId;
@@ -25,20 +26,24 @@ class SqlRouterImplTest {
     }
 
     private static ParsedSql txBegin() {
-        return new ParsedSql(SqlType.BEGIN, Set.of(), null, "BEGIN", false, true);
+        return new ParsedSql(SqlType.BEGIN, Set.of(), null,
+                null, AltRouteType.NONE, false, "BEGIN", false, true);
     }
 
     private static ParsedSql txCommit() {
-        return new ParsedSql(SqlType.COMMIT, Set.of(), null, "COMMIT", false, true);
+        return new ParsedSql(SqlType.COMMIT, Set.of(), null,
+                null, AltRouteType.NONE, false, "COMMIT", false, true);
     }
 
     private static ParsedSql selectWithShardKey(long userId) {
         return new ParsedSql(SqlType.SELECT, Set.of("orders"), userId,
+                null, AltRouteType.NONE, false,
                 "SELECT * FROM orders WHERE user_id=" + userId, false, false);
     }
 
     private static ParsedSql insertWithShardKey(long userId) {
         return new ParsedSql(SqlType.INSERT, Set.of("orders"), userId,
+                null, AltRouteType.NONE, false,
                 "INSERT INTO orders (user_id) VALUES (" + userId + ")", false, false);
     }
 
@@ -68,6 +73,7 @@ class SqlRouterImplTest {
     @Test
     void shouldRouteSelectForUpdateToPrimary() {
         ParsedSql forUpdate = new ParsedSql(SqlType.SELECT, Set.of("orders"), 100L,
+                null, AltRouteType.NONE, false,
                 "SELECT * FROM orders WHERE user_id=100 FOR UPDATE", true, false);
         RoutePlan plan = router.route(session, forUpdate);
         assertEquals(DataSourceId.shard(0), plan.dataSourceId());
@@ -119,7 +125,7 @@ class SqlRouterImplTest {
         session.beginTransaction();
 
         ParsedSql noShard = new ParsedSql(SqlType.SELECT, Set.of("orders"), null,
-                "SELECT * FROM orders", false, false);
+                null, AltRouteType.NONE, false, "SELECT * FROM orders", false, false);
         assertThrows(SqlRouterImpl.CrossShardException.class, () -> {
             router.route(session, noShard);
         });
@@ -136,7 +142,7 @@ class SqlRouterImplTest {
     @Test
     void shouldRouteWithoutShardKeyToDefaultOutsideTx() {
         ParsedSql select = new ParsedSql(SqlType.SELECT, Set.of(), null,
-                "SELECT 1", false, false);
+                null, AltRouteType.NONE, false, "SELECT 1", false, false);
         RoutePlan plan = router.route(session, select);
         assertEquals(DataSourceId.REPLICA, plan.dataSourceId());
         assertNull(plan.shardId());
@@ -146,7 +152,7 @@ class SqlRouterImplTest {
     void shouldRouteWriteWithoutShardKeyToPrimary() {
         // INSERT without explicit user_id shard key
         ParsedSql insert = new ParsedSql(SqlType.INSERT, Set.of("t"), null,
-                "INSERT INTO t VALUES (1)", false, false);
+                null, AltRouteType.NONE, false, "INSERT INTO t VALUES (1)", false, false);
         RoutePlan plan = router.route(session, insert);
         assertEquals(DataSourceId.PRIMARY, plan.dataSourceId());
     }

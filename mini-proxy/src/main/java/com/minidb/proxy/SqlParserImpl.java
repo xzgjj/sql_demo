@@ -22,34 +22,39 @@ public class SqlParserImpl {
 
     private static final Logger log = LoggerFactory.getLogger(SqlParserImpl.class);
 
+    private static final Set<String> PRIMARY_ONLY_TABLES = Set.of(
+            "idempotency_records", "exception_tickets",
+            "products", "product_inventory", "order_route"
+    );
+
     public ParsedSql parse(String sql) {
         if (sql == null || sql.isBlank()) {
-            return new ParsedSql(SqlType.OTHER, Set.of(), null, sql, false, false);
+            return new ParsedSql(SqlType.OTHER, Set.of(), null, null, AltRouteType.NONE, false, sql, false, false);
         }
 
         String trimmed = sql.trim().toUpperCase();
 
         // Fast-path for transaction commands (Druid may not parse these)
         if (trimmed.equals("BEGIN") || trimmed.equals("START TRANSACTION")) {
-            return new ParsedSql(SqlType.BEGIN, Set.of(), null, sql, false, true);
+            return new ParsedSql(SqlType.BEGIN, Set.of(), null, null, AltRouteType.NONE, false, sql, false, true);
         }
         if (trimmed.equals("COMMIT")) {
-            return new ParsedSql(SqlType.COMMIT, Set.of(), null, sql, false, true);
+            return new ParsedSql(SqlType.COMMIT, Set.of(), null, null, AltRouteType.NONE, false, sql, false, true);
         }
         if (trimmed.equals("ROLLBACK")) {
-            return new ParsedSql(SqlType.ROLLBACK, Set.of(), null, sql, false, true);
+            return new ParsedSql(SqlType.ROLLBACK, Set.of(), null, null, AltRouteType.NONE, false, sql, false, true);
         }
 
         // Fast-path for SET/SHOW
         if (trimmed.startsWith("SET ") || trimmed.startsWith("SHOW ")) {
             SqlType type = trimmed.startsWith("SET ") ? SqlType.SET : SqlType.SHOW;
-            return new ParsedSql(type, Set.of(), null, sql, false, false);
+            return new ParsedSql(type, Set.of(), null, null, AltRouteType.NONE, false, sql, false, false);
         }
 
         try {
             List<SQLStatement> stmts = SQLUtils.parseStatements(sql, JdbcConstants.MYSQL);
             if (stmts.isEmpty()) {
-                return new ParsedSql(SqlType.OTHER, Set.of(), null, sql, false, false);
+                return new ParsedSql(SqlType.OTHER, Set.of(), null, null, AltRouteType.NONE, false, sql, false, false);
             }
             SQLStatement stmt = stmts.get(0);
 
@@ -58,24 +63,39 @@ public class SqlParserImpl {
             stmt.accept(tables);
 
             Long shardKey = null;
+            String altRouteKey = null;
+            AltRouteType altRouteType = AltRouteType.NONE;
             boolean forUpdate = false;
 
             if (stmt instanceof SQLSelectStatement selectStmt) {
                 shardKey = extractShardKeyFromSelect(selectStmt);
+                altRouteKey = extractAltRouteFromSelect(selectStmt);
+                altRouteType = classifyAltRoute(selectStmt);
                 forUpdate = hasForUpdate(selectStmt);
             } else if (stmt instanceof SQLUpdateStatement updateStmt) {
                 shardKey = extractShardKeyFromUpdate(updateStmt);
+                var alt = extractAltRouteFromWhere(updateStmt.getWhere());
+                altRouteKey = alt != null ? alt.key() : null;
+                altRouteType = alt != null ? alt.type() : AltRouteType.NONE;
             } else if (stmt instanceof SQLDeleteStatement deleteStmt) {
                 shardKey = extractShardKeyFromDelete(deleteStmt);
+                var alt = extractAltRouteFromWhere(deleteStmt.getWhere());
+                altRouteKey = alt != null ? alt.key() : null;
+                altRouteType = alt != null ? alt.type() : AltRouteType.NONE;
             } else if (stmt instanceof SQLInsertStatement insertStmt) {
                 shardKey = extractShardKeyFromInsert(insertStmt);
             }
 
-            return new ParsedSql(type, tables.tables, shardKey, sql, forUpdate, false);
+            boolean primaryOnly = !tables.tables.isEmpty()
+                    && tables.tables.stream().allMatch(PRIMARY_ONLY_TABLES::contains);
+
+            return new ParsedSql(type, tables.tables, shardKey,
+                    altRouteKey, altRouteType, primaryOnly,
+                    sql, forUpdate, false);
 
         } catch (Exception e) {
             log.warn("Failed to parse SQL: {}", sql, e);
-            return new ParsedSql(SqlType.OTHER, Set.of(), null, sql, false, false);
+            return new ParsedSql(SqlType.OTHER, Set.of(), null, null, AltRouteType.NONE, false, sql, false, false);
         }
     }
 
@@ -142,6 +162,66 @@ public class SqlParserImpl {
         }
         return null;
     }
+
+    private String extractAltRouteFromSelect(SQLSelectStatement stmt) {
+        SQLSelectQueryBlock queryBlock = extractQueryBlock(stmt);
+        if (queryBlock == null) return null;
+        var result = extractAltRouteFromWhere(queryBlock.getWhere());
+        return result != null ? result.key() : null;
+    }
+
+    private AltRouteType classifyAltRoute(SQLSelectStatement stmt) {
+        SQLSelectQueryBlock queryBlock = extractQueryBlock(stmt);
+        if (queryBlock == null) return AltRouteType.NONE;
+        var result = extractAltRouteFromWhere(queryBlock.getWhere());
+        return result != null ? result.type() : AltRouteType.NONE;
+    }
+
+    private AltRouteResult extractAltRouteFromWhere(SQLExpr where) {
+        if (where instanceof SQLBinaryOpExpr binaryOp) {
+            if (binaryOp.getOperator().isRelational()
+                    && "=".equals(binaryOp.getOperator().getName())) {
+                AltRouteResult left = extractAltRouteKeyExpr(binaryOp.getLeft(), binaryOp.getRight());
+                if (left != null) return left;
+                AltRouteResult right = extractAltRouteKeyExpr(binaryOp.getRight(), binaryOp.getLeft());
+                if (right != null) return right;
+            }
+            if (binaryOp.getOperator().isLogical()) {
+                AltRouteResult left = extractAltRouteFromWhere(binaryOp.getLeft());
+                if (left != null) return left;
+                return extractAltRouteFromWhere(binaryOp.getRight());
+            }
+        }
+        return null;
+    }
+
+    private AltRouteResult extractAltRouteKeyExpr(SQLExpr nameExpr, SQLExpr valueExpr) {
+        if (nameExpr instanceof SQLIdentifierExpr idExpr) {
+            String name = idExpr.getName().replace("`", "").toLowerCase();
+            if ("order_no".equals(name)) {
+                String val = extractStringValue(valueExpr);
+                if (val != null) return new AltRouteResult(val, AltRouteType.ORDER_NO);
+            }
+            if ("payment_no".equals(name)) {
+                String val = extractStringValue(valueExpr);
+                if (val != null) return new AltRouteResult(val, AltRouteType.PAYMENT_NO);
+            }
+        }
+        return null;
+    }
+
+    private String extractStringValue(SQLExpr expr) {
+        if (expr instanceof com.alibaba.druid.sql.ast.expr.SQLCharExpr charExpr) {
+            return charExpr.getText();
+        }
+        if (expr instanceof SQLValuableExpr valued) {
+            Object val = valued.getValue();
+            if (val instanceof String s) return s;
+        }
+        return null;
+    }
+
+    record AltRouteResult(String key, AltRouteType type) {}
 
     private Long extractUserIdFromExpr(SQLExpr expr) {
         if (expr instanceof SQLIdentifierExpr idExpr) {

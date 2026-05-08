@@ -15,14 +15,14 @@ public record ProxyConfig(
 ) {
     public static ProxyConfig defaults() {
         return new ProxyConfig(
-                3307,
+                3306,
                 "proxy",
                 "proxy123",
                 16,
                 5000,
                 600_000,
                 3000,
-                2,
+                4,
                 5000,
                 "127.0.0.1",
                 3307
