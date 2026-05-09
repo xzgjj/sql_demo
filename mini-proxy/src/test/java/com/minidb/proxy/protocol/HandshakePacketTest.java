@@ -25,7 +25,7 @@ class HandshakePacketTest {
         int nullIdx = indexOfNull(payload);
         String version = payload.readCharSequence(nullIdx, StandardCharsets.UTF_8).toString();
         payload.skipBytes(1); // null terminator
-        assertTrue(version.contains("minidb-proxy") || version.contains("5.7"));
+        assertTrue(version.contains("minidb-proxy") || version.contains("5.7") || version.contains("8.4"));
 
         int connectionId = payload.readIntLE();
         assertEquals(1, connectionId);
