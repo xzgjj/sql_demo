@@ -458,6 +458,9 @@ public class ConsoleService {
 
     // ---- proxy management / observability ----
 
+    private static final java.util.logging.Logger PROXY_LOG =
+            java.util.logging.Logger.getLogger(ConsoleService.class.getName());
+
     @SuppressWarnings("unchecked")
     public ProxySessionsResult proxySessions() {
         try {
@@ -465,6 +468,7 @@ public class ConsoleService {
             List<Map<String, Object>> sessions = (List<Map<String, Object>>) data.getOrDefault("sessions", List.of());
             return new ProxySessionsResult(sessions, ((Number) data.getOrDefault("count", 0)).intValue());
         } catch (Exception e) {
+            PROXY_LOG.fine("Proxy management /sessions unavailable: " + e.getMessage());
             return new ProxySessionsResult(List.of(), 0);
         }
     }
@@ -476,6 +480,7 @@ public class ConsoleService {
             Map<String, Object> pools = (Map<String, Object>) data.getOrDefault("pools", Map.of());
             return new ProxyPoolsResult(pools, ((Number) data.getOrDefault("totalActive", 0)).intValue());
         } catch (Exception e) {
+            PROXY_LOG.fine("Proxy management /pools unavailable: " + e.getMessage());
             return new ProxyPoolsResult(Map.of(), 0);
         }
     }
@@ -483,31 +488,39 @@ public class ConsoleService {
     @SuppressWarnings("unchecked")
     public ProxyDecisionsResult proxyDecisions(String sessionId, int limit) {
         try {
-            String path = "/decisions?limit=" + Math.min(limit, 200);
+            StringBuilder path = new StringBuilder("/decisions?limit=").append(Math.min(limit, 200));
             if (sessionId != null && !sessionId.isBlank()) {
-                path += "&sessionId=" + sessionId;
+                path.append("&sessionId=").append(java.net.URLEncoder.encode(sessionId, StandardCharsets.UTF_8));
             }
-            Map<String, Object> data = fetchJson(path);
+            Map<String, Object> data = fetchJson(path.toString());
             List<Map<String, Object>> decisions = (List<Map<String, Object>>) data.getOrDefault("decisions", List.of());
             return new ProxyDecisionsResult(decisions, ((Number) data.getOrDefault("count", 0)).intValue());
         } catch (Exception e) {
+            PROXY_LOG.fine("Proxy management /decisions unavailable: " + e.getMessage());
             return new ProxyDecisionsResult(List.of(), 0);
         }
     }
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> fetchJson(String path) throws Exception {
-        java.net.URL url = new java.net.URL(proxyMgmtBaseUrl + path);
-        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-        conn.setConnectTimeout(2000);
-        conn.setReadTimeout(2000);
-        conn.setRequestMethod("GET");
-        int status = conn.getResponseCode();
-        if (status != 200) {
-            throw new RuntimeException("Proxy management API returned " + status);
+        java.net.HttpURLConnection conn = null;
+        try {
+            java.net.URL url = new java.net.URL(proxyMgmtBaseUrl + path);
+            conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(2000);
+            conn.setReadTimeout(2000);
+            conn.setRequestMethod("GET");
+            int status = conn.getResponseCode();
+            if (status != 200) {
+                throw new RuntimeException("Proxy management API returned " + status);
+            }
+            byte[] bytes = conn.getInputStream().readAllBytes();
+            return objectMapper.readValue(bytes, Map.class);
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
-        byte[] bytes = conn.getInputStream().readAllBytes();
-        return objectMapper.readValue(bytes, Map.class);
     }
 
     public record ProxySessionsResult(List<Map<String, Object>> sessions, int count) {}

@@ -96,7 +96,7 @@ public class SqlParserImpl {
                     sql, forUpdate, false);
 
         } catch (Exception e) {
-            log.warn("Failed to parse SQL: {}", sql, e);
+            log.debug("Failed to parse SQL: {} — {}", sql, e.getMessage());
             return new ParsedSql(SqlType.OTHER, Set.of(), null, null, AltRouteType.NONE, false, sql, false, false);
         }
     }

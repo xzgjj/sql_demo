@@ -149,7 +149,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
                 conn.close();
             }
         }
-        log.info("Connection pool drained");
+        log.debug("Connection pool drained");
     }
 
     private void evictIdleConnections() {
