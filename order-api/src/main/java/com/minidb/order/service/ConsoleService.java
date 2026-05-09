@@ -39,6 +39,7 @@ public class ConsoleService {
     private final boolean demoEnabled;
     private final boolean proxyMode;
     private final String activeProfiles;
+    private final String proxyMgmtBaseUrl;
 
     public ConsoleService(JdbcTemplate jdbc, OrderService orderService, PaymentService paymentService,
                           OutboxProcessor outboxProcessor, FulfillmentService fulfillmentService,
@@ -48,7 +49,8 @@ public class ConsoleService {
                           @Value("${minidb.order.shard-count:4}") int shardCount,
                           @Value("${minidb.console.demo-enabled:false}") boolean demoEnabled,
                           @Value("${minidb.order.proxy-mode:false}") boolean proxyMode,
-                          @Value("${spring.profiles.active:}") String activeProfiles) {
+                          @Value("${spring.profiles.active:}") String activeProfiles,
+                          @Value("${minidb.proxy.mgmt-url:http://127.0.0.1:4307}") String proxyMgmtBaseUrl) {
         this.jdbc = jdbc;
         this.orderService = orderService;
         this.paymentService = paymentService;
@@ -65,6 +67,7 @@ public class ConsoleService {
             profiles = String.join(",", environment.getActiveProfiles());
         }
         this.activeProfiles = profiles;
+        this.proxyMgmtBaseUrl = proxyMgmtBaseUrl;
     }
 
     public RuntimeMode runtimeMode() {
@@ -452,4 +455,62 @@ public class ConsoleService {
                                List<String> outbox, Map<String, String> mvccChains) {}
     public record RuntimeMode(String mode, boolean proxyMode, boolean demoEnabled, boolean testProfile,
                               int shardCount, String activeProfiles, List<String> warnings) {}
+
+    // ---- proxy management / observability ----
+
+    @SuppressWarnings("unchecked")
+    public ProxySessionsResult proxySessions() {
+        try {
+            Map<String, Object> data = fetchJson("/sessions");
+            List<Map<String, Object>> sessions = (List<Map<String, Object>>) data.getOrDefault("sessions", List.of());
+            return new ProxySessionsResult(sessions, ((Number) data.getOrDefault("count", 0)).intValue());
+        } catch (Exception e) {
+            return new ProxySessionsResult(List.of(), 0);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public ProxyPoolsResult proxyPools() {
+        try {
+            Map<String, Object> data = fetchJson("/pools");
+            Map<String, Object> pools = (Map<String, Object>) data.getOrDefault("pools", Map.of());
+            return new ProxyPoolsResult(pools, ((Number) data.getOrDefault("totalActive", 0)).intValue());
+        } catch (Exception e) {
+            return new ProxyPoolsResult(Map.of(), 0);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public ProxyDecisionsResult proxyDecisions(String sessionId, int limit) {
+        try {
+            String path = "/decisions?limit=" + Math.min(limit, 200);
+            if (sessionId != null && !sessionId.isBlank()) {
+                path += "&sessionId=" + sessionId;
+            }
+            Map<String, Object> data = fetchJson(path);
+            List<Map<String, Object>> decisions = (List<Map<String, Object>>) data.getOrDefault("decisions", List.of());
+            return new ProxyDecisionsResult(decisions, ((Number) data.getOrDefault("count", 0)).intValue());
+        } catch (Exception e) {
+            return new ProxyDecisionsResult(List.of(), 0);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> fetchJson(String path) throws Exception {
+        java.net.URL url = new java.net.URL(proxyMgmtBaseUrl + path);
+        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+        conn.setConnectTimeout(2000);
+        conn.setReadTimeout(2000);
+        conn.setRequestMethod("GET");
+        int status = conn.getResponseCode();
+        if (status != 200) {
+            throw new RuntimeException("Proxy management API returned " + status);
+        }
+        byte[] bytes = conn.getInputStream().readAllBytes();
+        return objectMapper.readValue(bytes, Map.class);
+    }
+
+    public record ProxySessionsResult(List<Map<String, Object>> sessions, int count) {}
+    public record ProxyPoolsResult(Map<String, Object> pools, int totalActive) {}
+    public record ProxyDecisionsResult(List<Map<String, Object>> decisions, int count) {}
 }

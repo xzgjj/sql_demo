@@ -15,6 +15,7 @@ public class SqlRouterImpl {
     private final int shardCount;
     private final long readAfterWriteWindowMs;
     private final RouteTableLookup routeTableLookup;
+    private volatile RouteDecisionLog decisionLog;
 
     public SqlRouterImpl(int shardCount, long readAfterWriteWindowMs) {
         this(shardCount, readAfterWriteWindowMs, null);
@@ -24,6 +25,10 @@ public class SqlRouterImpl {
         this.shardCount = shardCount;
         this.readAfterWriteWindowMs = readAfterWriteWindowMs;
         this.routeTableLookup = routeTableLookup;
+    }
+
+    public void setDecisionLog(RouteDecisionLog log) {
+        this.decisionLog = log;
     }
 
     public RoutePlan route(ProxySession session, ParsedSql sql) {

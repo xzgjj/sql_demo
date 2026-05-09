@@ -121,6 +121,24 @@ export const api = {
   trace: (orderId: number) => request<OrderTrace>(`/api/audit/orders/${orderId}/trace`),
   routePreview: (sql: string) => request<Record<string, unknown>>(`/api/proxy/routes/preview?sql=${encodeURIComponent(sql)}`),
   runScenario: (scenario: string) => request<LabRunResult>(`/api/lab/scenarios/${scenario}/run`, { method: 'POST', body: JSON.stringify({}) }),
+  proxySessions: () => request<ProxySessionsResult>('/api/proxy/sessions'),
+  proxyPools: () => request<ProxyPoolsResult>('/api/proxy/pools'),
+  proxyDecisions: (limit?: number, sessionId?: string) => request<ProxyDecisionsResult>(`/api/proxy/decisions?limit=${limit ?? 50}${sessionId ? `&sessionId=${sessionId}` : ''}`),
+};
+
+export type ProxySessionsResult = {
+  sessions: Array<Record<string, unknown>>;
+  count: number;
+};
+
+export type ProxyPoolsResult = {
+  pools: Record<string, { active: number; idle: number; max: number; healthy: boolean }>;
+  totalActive: number;
+};
+
+export type ProxyDecisionsResult = {
+  decisions: Array<{ sessionId: string; sql: string; keyType: string; keyValue: string; target: string; reason: string; status: string; elapsedMs: number }>;
+  count: number;
 };
 
 function pageParams(status?: number) {

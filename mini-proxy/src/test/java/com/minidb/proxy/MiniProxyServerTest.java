@@ -43,7 +43,8 @@ class MiniProxyServerTest {
         return new ProxyFrontendHandler(config,
                 new SqlParserImpl(),
                 new SqlRouterImpl(config.shardCount(), config.readAfterWriteWindowMs()),
-                pool);
+                pool,
+                new RouteDecisionLog(100));
     }
 
     @Test

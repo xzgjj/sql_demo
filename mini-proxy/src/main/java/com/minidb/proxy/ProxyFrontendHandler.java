@@ -30,13 +30,21 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
     private final SqlParserImpl sqlParser;
     private final SqlRouterImpl router;
     private final BackendConnectionPool pool;
+    private final RouteDecisionLog decisionLog;
+    private ProxyManagementServer managementServer;
 
     public ProxyFrontendHandler(ProxyConfig config, SqlParserImpl sqlParser,
-                                SqlRouterImpl router, BackendConnectionPool pool) {
+                                SqlRouterImpl router, BackendConnectionPool pool,
+                                RouteDecisionLog decisionLog) {
         this.config = config;
         this.sqlParser = sqlParser;
         this.router = router;
         this.pool = pool;
+        this.decisionLog = decisionLog;
+    }
+
+    public void setManagementServer(ProxyManagementServer mgmt) {
+        this.managementServer = mgmt;
     }
 
     @Override
@@ -44,6 +52,10 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         Channel channel = ctx.channel();
         ProxySession session = new ProxySession(channel);
         channel.attr(SESSION_KEY).set(session);
+
+        if (managementServer != null) {
+            managementServer.registerSession(session);
+        }
 
         byte[] scramble = AuthNativePassword.generateScramble(20);
         channel.attr(SCRAMBLE_KEY).set(scramble);
@@ -138,11 +150,14 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
         ParsedSql parsed = sqlParser.parse(sql);
         RoutePlan plan;
+        long routeStart = System.currentTimeMillis();
 
         try {
             plan = router.route(session, parsed);
         } catch (SqlRouterImpl.CrossShardException e) {
             log.warn("Routing error: {}", e.getMessage());
+            decisionLog.record(session.sessionId(), sqlPreview(sql), "NONE", "-",
+                    "REJECTED", e.getMessage(), "ERR", System.currentTimeMillis() - routeStart);
             ctx.writeAndFlush(ResponsePackets.err((byte) 1, e.errorCode(), e.getMessage()));
             return;
         }
@@ -151,6 +166,16 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             handleTxCommand(ctx, session, parsed);
             return;
         }
+
+        // Record route decision
+        String target = plan.dataSourceId() != null ? plan.dataSourceId().name() : "session";
+        String keyType = parsed.hasAltRouteKey() ? parsed.altRouteType().name()
+                : parsed.shardKey() != null ? "USER_ID"
+                : parsed.isPrimaryOnly() ? "PRIMARY_ONLY" : "DIRECT";
+        String keyValue = parsed.shardKey() != null ? String.valueOf(parsed.shardKey())
+                : parsed.hasAltRouteKey() ? parsed.altRouteKey() : "-";
+        decisionLog.record(session.sessionId(), sqlPreview(sql), keyType, keyValue,
+                target, "routed", "OK", System.currentTimeMillis() - routeStart);
 
         // Release any previous non-transactional connection before borrowing a new one
         if (!session.inTransaction()) {
@@ -276,10 +301,18 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         }
     }
 
+    private static String sqlPreview(String sql) {
+        if (sql == null) return "";
+        return sql.length() > 80 ? sql.substring(0, 77) + "..." : sql;
+    }
+
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         ProxySession session = ctx.channel().attr(SESSION_KEY).get();
         if (session != null) {
+            if (managementServer != null) {
+                managementServer.unregisterSession(session.sessionId());
+            }
             log.info("Client {} disconnected, session={}", ctx.channel().remoteAddress(), session.sessionId());
             session.setState(ConnectionState.CLOSING);
 

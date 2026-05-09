@@ -180,6 +180,33 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         }
     }
 
+    // ---- observability ----
+
+    public int activeCount(DataSourceId id) {
+        return activeCounts.getOrDefault(id, new AtomicInteger(0)).get();
+    }
+
+    public int idleCount(DataSourceId id) {
+        BlockingQueue<BackendConnection> q = idleQueues.get(id);
+        return q == null ? 0 : q.size();
+    }
+
+    public int maxSize(DataSourceId id) {
+        return maxSizes.getOrDefault(id, 0);
+    }
+
+    public int totalActive() {
+        return activeCounts.values().stream().mapToInt(AtomicInteger::get).sum();
+    }
+
+    public boolean isHealthy(DataSourceId id) {
+        return serverConfigs.containsKey(id);
+    }
+
+    public java.util.Set<DataSourceId> registeredDataSources() {
+        return java.util.Collections.unmodifiableSet(serverConfigs.keySet());
+    }
+
     private BackendConnection createConnection(DataSourceId id) {
         BackendServerConfig cfg = serverConfigs.get(id);
         if (cfg == null) return null;

@@ -48,4 +48,21 @@ public class ConsoleController {
             @RequestBody(required = false) Map<String, String> body) {
         return ResponseEntity.ok(ApiResponse.ok(consoleService.runLabScenario(scenario)));
     }
+
+    @GetMapping("/proxy/sessions")
+    public ResponseEntity<ApiResponse<ConsoleService.ProxySessionsResult>> proxySessions() {
+        return ResponseEntity.ok(ApiResponse.ok(consoleService.proxySessions()));
+    }
+
+    @GetMapping("/proxy/pools")
+    public ResponseEntity<ApiResponse<ConsoleService.ProxyPoolsResult>> proxyPools() {
+        return ResponseEntity.ok(ApiResponse.ok(consoleService.proxyPools()));
+    }
+
+    @GetMapping("/proxy/decisions")
+    public ResponseEntity<ApiResponse<ConsoleService.ProxyDecisionsResult>> proxyDecisions(
+            @RequestParam(name = "sessionId", required = false) String sessionId,
+            @RequestParam(name = "limit", defaultValue = "50") int limit) {
+        return ResponseEntity.ok(ApiResponse.ok(consoleService.proxyDecisions(sessionId, limit)));
+    }
 }

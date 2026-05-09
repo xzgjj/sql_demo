@@ -3,12 +3,12 @@ import { PageContainer, ProCard, ProTable } from '@ant-design/pro-components';
 import type { ProColumns } from '@ant-design/pro-components';
 import { Alert, Button, Descriptions, Drawer, Input, Layout, Menu, Modal, Progress, Radio, Segmented, Select, Skeleton, Space, Statistic, Tabs, Tag, Timeline, Typography, message } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
-import { api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, RuntimeMode, TaskItem, orderStatusText, taskStatusText } from './api';
+import { api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, ProxyDecisionsResult, ProxyPoolsResult, ProxySessionsResult, RuntimeMode, TaskItem, orderStatusText, taskStatusText } from './api';
 import { Lang, tr } from './i18n';
 
 const { Sider, Header, Content } = Layout;
 
-type PageKey = 'dashboard' | 'orders' | 'fulfillment' | 'exceptions' | 'lab' | 'trace' | 'routePreview' | 'settings';
+type PageKey = 'dashboard' | 'orders' | 'fulfillment' | 'exceptions' | 'lab' | 'trace' | 'routePreview' | 'proxy' | 'settings';
 type TerminalKey = 'business' | 'database';
 
 const menuIcon = {
@@ -19,12 +19,13 @@ const menuIcon = {
   lab: <DatabaseOutlined />,
   trace: <FileSearchOutlined />,
   routePreview: <FileSearchOutlined />,
+  proxy: <DatabaseOutlined />,
   settings: <SettingOutlined />,
 };
 
 const terminalPages: Record<TerminalKey, PageKey[]> = {
   business: ['dashboard', 'orders', 'fulfillment', 'exceptions', 'settings'],
-  database: ['lab', 'trace', 'routePreview', 'settings'],
+  database: ['lab', 'trace', 'routePreview', 'proxy', 'settings'],
 };
 
 const defaultPage: Record<TerminalKey, PageKey> = {
@@ -40,6 +41,7 @@ const pageSegments: Record<PageKey, string> = {
   lab: 'lab',
   trace: 'trace',
   routePreview: 'route-preview',
+  proxy: 'proxy',
   settings: 'settings',
 };
 
@@ -55,6 +57,7 @@ const databaseSegmentMap: Record<string, PageKey> = {
   lab: 'lab',
   trace: 'trace',
   'route-preview': 'routePreview',
+  proxy: 'proxy',
   settings: 'settings',
 };
 
@@ -182,6 +185,7 @@ export default function App() {
           {terminal === 'database' && page === 'lab' && <Lab lang={lang} />}
           {terminal === 'database' && page === 'trace' && <DatabaseTrace lang={lang} orderId={traceOrderId} setOrderId={updateTraceOrderId} backToOrders={() => navigate('business', 'orders', traceOrderId)} />}
           {terminal === 'database' && page === 'routePreview' && <RoutePreview lang={lang} />}
+          {terminal === 'database' && page === 'proxy' && <ProxyPage lang={lang} />}
           {page === 'settings' && <Settings lang={lang} health={health} runtimeMode={runtimeMode} />}
         </Content>
       </Layout>
@@ -513,12 +517,18 @@ function Lab({ lang }: { lang: Lang }) {
 
 function DatabaseTrace({ lang, orderId, setOrderId, backToOrders }: { lang: Lang; orderId: number; setOrderId: (id: number) => void; backToOrders: () => void }) {
   const [trace, setTrace] = useState<OrderTrace>();
+  const [decisions, setDecisions] = useState<ProxyDecisionsResult>();
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setTrace(await api.trace(orderId));
+      const [t, d] = await Promise.all([
+        api.trace(orderId),
+        api.proxyDecisions(20),
+      ]);
+      setTrace(t);
+      setDecisions(d);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -545,18 +555,95 @@ function DatabaseTrace({ lang, orderId, setOrderId, backToOrders }: { lang: Lang
           </ProCard>
           <ProCard title={lang === 'zh' ? '证据覆盖' : 'Evidence Coverage'}>
             <div className="evidence-grid">
-              <Tag color={trace?.routeTable?.length ? 'green' : 'default'}>SQL Route</Tag>
+              <Tag color={trace?.routeTable?.length ? 'green' : 'default'}>Route Table</Tag>
               <Tag color={trace?.idempotency?.length ? 'green' : 'default'}>Idempotency</Tag>
               <Tag color={trace?.outbox?.length ? 'green' : 'default'}>Outbox</Tag>
-              <Tag color={trace?.sqlHistory?.length ? 'green' : 'default'}>SQL History</Tag>
+              <Tag color={trace?.timeline?.length ? 'green' : 'default'}>Timeline</Tag>
+              {decisions?.decisions?.length ? <Tag color="green">Proxy Log</Tag> : <Tag>Proxy Log</Tag>}
             </div>
           </ProCard>
         </div>
         {trace?.order && <TraceSummary trace={trace} lang={lang} />}
-        <TracePanel lang={lang} trace={trace} />
+        <Tabs items={[
+          {
+            key: 'overview', label: lang === 'zh' ? '链路总览' : 'Overview',
+            children: <TraceTimelineView trace={trace} decisions={decisions} lang={lang} />,
+          },
+          {
+            key: 'route', label: lang === 'zh' ? '路由表' : 'Route Table',
+            children: <ProTable rowKey="orderNo" search={false} pagination={false}
+              dataSource={(trace?.routeTable ?? []).map((r) => r as Record<string, unknown>)}
+              columns={[
+                { title: 'order_no', dataIndex: 'orderNo' }, { title: 'payment_no', dataIndex: 'paymentNo' },
+                { title: 'user_id', dataIndex: 'userId' }, { title: 'biz_type', dataIndex: 'bizType' },
+              ]}
+            />,
+          },
+          {
+            key: 'idempotency', label: lang === 'zh' ? '幂等记录' : 'Idempotency',
+            children: <ProTable rowKey="key" search={false} pagination={false}
+              dataSource={(trace?.idempotency ?? []).map((r) => r as Record<string, unknown>)}
+              columns={[
+                { title: 'Key', dataIndex: 'key', ellipsis: true }, { title: 'actor', dataIndex: 'actorType' },
+                { title: 'status', dataIndex: 'status' }, { title: 'created', dataIndex: 'createdAt' },
+              ]}
+            />,
+          },
+          {
+            key: 'outbox', label: lang === 'zh' ? '事件箱' : 'Outbox',
+            children: <ProTable rowKey="id" search={false} pagination={false}
+              dataSource={(trace?.outbox ?? []).map((r) => r as Record<string, unknown>)}
+              columns={[
+                { title: 'ID', dataIndex: 'id' }, { title: 'Event', dataIndex: 'eventType' },
+                { title: 'Aggregate', dataIndex: 'aggregateType' }, { title: 'Status', dataIndex: 'status' },
+                { title: 'Retry', dataIndex: 'retryCount' }, { title: 'Created', dataIndex: 'createdAt' },
+              ]}
+            />,
+          },
+          {
+            key: 'sql', label: lang === 'zh' ? 'SQL 历史' : 'SQL History',
+            children: <pre className="trace-pre">{(trace?.sqlHistory ?? []).join('\n\n')}</pre>,
+          },
+        ]} />
       </Space>
     </PageContainer>
   );
+}
+
+function TraceTimelineView({ trace, decisions, lang }: { trace?: OrderTrace; decisions?: ProxyDecisionsResult; lang: Lang }) {
+  const items: Array<{ color: string; children: React.ReactNode }> = [];
+
+  if (trace?.route) {
+    items.push({ color: 'blue', children: <span><strong>{lang === 'zh' ? '路由策略' : 'Route'}:</strong> {trace.route}</span> });
+  }
+  if (trace?.transactionContext) {
+    items.push({ color: 'purple', children: <span><strong>{lang === 'zh' ? '事务上下文' : 'Transaction'}:</strong> {trace.transactionContext}</span> });
+  }
+
+  trace?.timeline?.forEach((t) => {
+    const item = t as Record<string, unknown>;
+    items.push({ color: 'green', children: <span>{lang === 'zh' ? '状态变更' : 'Status'}: <Tag>{String(item.toStatus)}</Tag> {String(item.reason ?? '')} <Typography.Text type="secondary">{String(item.createdAt ?? '')}</Typography.Text></span> });
+  });
+
+  trace?.idempotency?.forEach((r) => {
+    const item = r as Record<string, unknown>;
+    items.push({ color: 'orange', children: <span>{lang === 'zh' ? '幂等' : 'Idempotency'}: <Tag>{String(item.status)}</Tag> key={String(item.key ?? '').substring(0, 24)}...</span> });
+  });
+
+  trace?.outbox?.forEach((r) => {
+    const item = r as Record<string, unknown>;
+    items.push({ color: 'cyan', children: <span>Outbox: <Tag>{String(item.eventType)}</Tag> status={String(item.status)} retry={String(item.retryCount)}</span> });
+  });
+
+  decisions?.decisions?.slice(0, 10).forEach((d) => {
+    items.push({ color: d.status === 'ERR' ? 'red' : 'blue', children: <span>Proxy: <Tag color={d.target === 'REJECTED' ? 'red' : 'blue'}>{d.keyType}</Tag> {d.sql} → <strong>{d.target}</strong> <Typography.Text type="secondary">{d.elapsedMs}ms</Typography.Text></span> });
+  });
+
+  if (items.length === 0) {
+    return <Alert message={lang === 'zh' ? '暂无链路数据' : 'No trace data'} type="info" />;
+  }
+
+  return <Timeline items={items} />;
 }
 
 function RoutePreview({ lang }: { lang: Lang }) {
@@ -730,4 +817,83 @@ function cancelOrder(orderId: number, userId: number, after: () => void, lang: L
       after();
     },
   });
+}
+
+function ProxyPage({ lang }: { lang: Lang }) {
+  const [pools, setPools] = useState<ProxyPoolsResult>();
+  const [sessions, setSessions] = useState<ProxySessionsResult>();
+  const [decisions, setDecisions] = useState<ProxyDecisionsResult>();
+  const [loading, setLoading] = useState(false);
+
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const [p, s, d] = await Promise.all([
+        api.proxyPools(), api.proxySessions(), api.proxyDecisions(30),
+      ]);
+      setPools(p); setSessions(s); setDecisions(d);
+    } catch (e) { message.error((e as Error).message); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { void reload(); }, []);
+
+  const poolEntries = pools ? Object.entries(pools.pools) : [];
+  const totalMax = poolEntries.reduce((sum, [, v]) => sum + v.max, 0);
+  const totalUsed = pools?.totalActive ?? 0;
+
+  return (
+    <PageContainer title={tr(lang, 'proxy')} extra={<Button type="primary" loading={loading} onClick={reload}>{tr(lang, 'refresh')}</Button>}>
+      <Space direction="vertical" size={16} className="full">
+        <div className="metric-grid">
+          <ProCard><Statistic title={lang === 'zh' ? '会话数' : 'Sessions'} value={sessions?.count ?? '-'} /></ProCard>
+          <ProCard><Statistic title={lang === 'zh' ? '活跃连接' : 'Active Connections'} value={totalUsed} suffix={`/ ${totalMax}`} /></ProCard>
+          <ProCard><Statistic title={lang === 'zh' ? '数据源' : 'Data Sources'} value={poolEntries.length} /></ProCard>
+          <ProCard><Statistic title={lang === 'zh' ? '路由决策' : 'Route Decisions'} value={decisions?.count ?? '-'} /></ProCard>
+        </div>
+
+        <ProCard title={lang === 'zh' ? '连接池状态' : 'Connection Pools'}>
+          <ProTable rowKey="name" search={false} pagination={false}
+            dataSource={poolEntries.map(([name, v]) => ({ name, ...v }))}
+            columns={[
+              { title: lang === 'zh' ? '数据源' : 'Source', dataIndex: 'name', render: (_, r) => <Tag color={r.healthy ? 'green' : 'red'}>{r.name}</Tag> },
+              { title: lang === 'zh' ? '活跃' : 'Active', dataIndex: 'active' },
+              { title: lang === 'zh' ? '空闲' : 'Idle', dataIndex: 'idle' },
+              { title: lang === 'zh' ? '最大' : 'Max', dataIndex: 'max' },
+              { title: lang === 'zh' ? '使用率' : 'Usage', render: (_, r) => <Progress percent={r.max > 0 ? Math.round((r.active / r.max) * 100) : 0} size="small" /> },
+            ]}
+          />
+        </ProCard>
+
+        <ProCard title={lang === 'zh' ? '路由决策日志' : 'Route Decision Log'}>
+          <ProTable rowKey="id" search={false} pagination={{ defaultPageSize: 15, pageSizeOptions: ['10', '20', '50'] }}
+            dataSource={(decisions?.decisions ?? []).map((d, i) => ({ ...d, _key: i }))}
+            columns={[
+              { title: 'SQL', dataIndex: 'sql', ellipsis: true, width: 280 },
+              { title: lang === 'zh' ? '键类型' : 'Key Type', dataIndex: 'keyType', render: (_, r) => <Tag color={r.keyType === 'USER_ID' ? 'blue' : r.keyType === 'PRIMARY_ONLY' ? 'purple' : 'default'}>{r.keyType}</Tag> },
+              { title: lang === 'zh' ? '键值' : 'Key Value', dataIndex: 'keyValue' },
+              { title: lang === 'zh' ? '目标' : 'Target', dataIndex: 'target', render: (_, r) => r.target === 'REJECTED' ? <Tag color="red">{r.target}</Tag> : <Tag color="green">{r.target}</Tag> },
+              { title: lang === 'zh' ? '状态' : 'Status', dataIndex: 'status', render: (_, r) => <Tag color={r.status === 'OK' ? 'green' : 'red'}>{r.status}</Tag> },
+              { title: lang === 'zh' ? '耗时' : 'Time', dataIndex: 'elapsedMs', render: (_, r) => `${r.elapsedMs}ms` },
+            ]}
+          />
+        </ProCard>
+
+        {sessions && sessions.count > 0 && (
+          <ProCard title={lang === 'zh' ? '活跃会话' : 'Active Sessions'}>
+            <ProTable rowKey="sessionId" search={false} pagination={false}
+              dataSource={sessions.sessions.map((s) => ({ sessionId: String(s.sessionId ?? '-'), clientAddr: String(s.clientAddr ?? '-'), inTransaction: Boolean(s.inTransaction), boundShardId: Number(s.boundShardId ?? -1), hasBackendConnection: Boolean(s.hasBackendConnection) }))}
+              columns={[
+                { title: 'Session ID', dataIndex: 'sessionId', ellipsis: true },
+                { title: lang === 'zh' ? '来源' : 'Client', dataIndex: 'clientAddr' },
+                { title: lang === 'zh' ? '事务中' : 'In TX', dataIndex: 'inTransaction', render: (_, r) => r.inTransaction ? <Tag color="orange">YES</Tag> : <Tag>NO</Tag> },
+                { title: lang === 'zh' ? '绑定分片' : 'Bound Shard', dataIndex: 'boundShardId', render: (_, r) => r.boundShardId >= 0 ? <Tag color="blue">shard_{r.boundShardId}</Tag> : <Tag>-</Tag> },
+                { title: lang === 'zh' ? '后端连接' : 'Backend', dataIndex: 'hasBackendConnection', render: (_, r) => r.hasBackendConnection ? <Tag color="green">YES</Tag> : <Tag>NO</Tag> },
+              ]}
+            />
+          </ProCard>
+        )}
+      </Space>
+    </PageContainer>
+  );
 }
