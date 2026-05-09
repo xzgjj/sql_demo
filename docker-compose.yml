@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   mysql-primary:
     image: mysql:8.4
