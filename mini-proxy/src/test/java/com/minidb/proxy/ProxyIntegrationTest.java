@@ -151,8 +151,7 @@ class ProxyIntegrationTest {
     }
 
     private static void skipNullTerm(InputStream in) throws IOException {
-        int b;
-        while ((b = in.read()) > 0) {}
+        while (in.read() > 0) {}
     }
 
     private static void writeIntLE(OutputStream out, int value) throws IOException {
