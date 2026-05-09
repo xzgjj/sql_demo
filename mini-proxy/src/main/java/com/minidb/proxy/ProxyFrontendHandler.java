@@ -184,9 +184,9 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
 
         BackendConnection backendConn;
         try {
-            backendConn = plan.requiresBackend()
-                    ? pool.borrow(plan.dataSourceId())
-                    : pool.borrow(session.boundConnection().dataSourceId());
+            backendConn = session.inTransaction() && session.boundConnection() != null
+                    ? session.boundConnection()
+                    : pool.borrow(plan.dataSourceId());
         } catch (Exception e) {
             log.error("Failed to borrow backend connection", e);
             ctx.writeAndFlush(ResponsePackets.err((byte) 1, 1040,

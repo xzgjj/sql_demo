@@ -48,6 +48,7 @@ public class OrderService {
 
     @Transactional
     public CreateOrderResponse createOrder(CreateOrderRequest req, String idempotencyKey) {
+        rejectProxyWrite("create orders");
         log.info("Creating order for user={}, items={}", req.userId(), req.items().size());
 
         String reqJson;
@@ -129,10 +130,7 @@ public class OrderService {
 
     @Transactional
     public void cancelOrder(Long orderId, String reason, String idempotencyKey, Long operatorId) {
-        if (proxyMode && (operatorId == null || operatorId <= 0)) {
-            throw new BusinessException("SHARD_KEY_REQUIRED",
-                    "user_id is required to cancel orders through mini-proxy");
-        }
+        rejectProxyWrite("cancel orders");
         String reqJson;
         try { reqJson = objectMapper.writeValueAsString(Map.of("orderId", orderId, "reason", reason)); }
         catch (Exception e) { throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize cancel request"); }
@@ -216,6 +214,13 @@ public class OrderService {
                     orderNo, userId);
         } catch (Exception e) {
             log.warn("Failed to write order_route for orderNo={}: {}", orderNo, e.getMessage());
+        }
+    }
+
+    private void rejectProxyWrite(String action) {
+        if (proxyMode) {
+            throw new BusinessException("PROXY_MODE_UNSUPPORTED_WRITE",
+                    "Cannot " + action + " in proxy mode because the workflow spans PRIMARY metadata tables and sharded order tables without XA.");
         }
     }
 

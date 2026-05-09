@@ -144,6 +144,25 @@ class SqlParserImplTest {
     }
 
     @Test
+    void shouldRejectOrShardKeyAsUnsafe() {
+        ParsedSql result = parser.parse("SELECT * FROM orders WHERE user_id = 100 OR user_id = 101");
+        assertNull(result.shardKey());
+    }
+
+    @Test
+    void shouldRejectMultiRowInsertAsUnsafe() {
+        ParsedSql result = parser.parse(
+                "INSERT INTO orders (id, user_id, amount) VALUES (1, 100, 29.90), (2, 101, 39.90)");
+        assertNull(result.shardKey());
+    }
+
+    @Test
+    void shouldExtractAliasedUserId() {
+        ParsedSql result = parser.parse("SELECT * FROM orders o WHERE o.user_id = 100");
+        assertEquals(100L, result.shardKey());
+    }
+
+    @Test
     void shouldDetectPrimaryOnlyTable() {
         ParsedSql result = parser.parse("SELECT * FROM idempotency_records WHERE idempotency_key = 'key1'");
         assertTrue(result.isPrimaryOnly());

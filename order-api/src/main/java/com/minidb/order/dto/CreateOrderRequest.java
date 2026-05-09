@@ -8,12 +8,12 @@ import jakarta.validation.constraints.Size;
 import java.util.List;
 
 public record CreateOrderRequest(
-    @NotNull Long userId,
+    @NotNull @Positive Long userId,
     @NotEmpty @Size(min = 1, max = 20) @Valid List<OrderItemRequest> items,
     @Size(max = 256) String remark
 ) {
     public record OrderItemRequest(
-        @NotNull Long productId,
+        @NotNull @Positive Long productId,
         @Positive int quantity
     ) {}
 }

@@ -23,6 +23,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
     private final Map<DataSourceId, BlockingQueue<BackendConnection>> idleQueues = new ConcurrentHashMap<>();
     private final Map<DataSourceId, Integer> maxSizes = new ConcurrentHashMap<>();
     private final Map<DataSourceId, AtomicInteger> activeCounts = new ConcurrentHashMap<>();
+    private final Map<DataSourceId, Semaphore> borrowPermits = new ConcurrentHashMap<>();
     private final Map<DataSourceId, BackendServerConfig> serverConfigs = new ConcurrentHashMap<>();
 
     private final long borrowTimeoutMs;
@@ -45,6 +46,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         maxSizes.put(id, maxSize);
         idleQueues.computeIfAbsent(id, k -> new LinkedBlockingQueue<>());
         activeCounts.putIfAbsent(id, new AtomicInteger(0));
+        borrowPermits.put(id, new Semaphore(maxSize));
     }
 
     public void startEviction() {
@@ -64,53 +66,63 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
 
         BlockingQueue<BackendConnection> queue = idleQueues.get(id);
         if (queue == null) throw new IllegalArgumentException("Unknown DataSource: " + id);
+        Semaphore permits = borrowPermits.get(id);
+        if (permits == null) throw new IllegalArgumentException("Unknown DataSource: " + id);
 
-        // Try idle connections first
-        BackendConnection conn = queue.poll();
-        if (conn != null) {
-            if (conn.healthy()) {
-                conn.markBorrowed();
-                incActiveCount(id);
-                log.debug("Reused idle connection to {}", id.name());
-                return conn;
+        acquirePermit(id, permits);
+        boolean permitOwned = true;
+
+        try {
+            // Try idle connections first
+            BackendConnection conn = queue.poll();
+            if (conn != null) {
+                if (conn.healthy()) {
+                    conn.markBorrowed();
+                    incActiveCount(id);
+                    log.debug("Reused idle connection to {}", id.name());
+                    permitOwned = false;
+                    return conn;
+                }
+                conn.close();
             }
-            conn.close();
-            decActiveCount(id);
-        }
 
-        // Maybe create a new connection
-        int active = activeCounts.getOrDefault(id, new AtomicInteger(0)).get();
-        int max = maxSizes.getOrDefault(id, 16);
-        if (active < max) {
+            // Maybe create a new connection. The semaphore already enforces the
+            // max concurrent borrow limit, so creation is safe under contention.
             BackendConnection newConn = createConnection(id);
             if (newConn != null) {
                 newConn.markBorrowed();
                 incActiveCount(id);
                 log.debug("Created new connection to {}", id.name());
+                permitOwned = false;
                 return newConn;
             }
-        }
 
-        // Wait for idle connection with bounded retry
-        for (int retries = 0; retries < 3; retries++) {
-            try {
-                conn = queue.poll(borrowTimeoutMs, TimeUnit.MILLISECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Interrupted while borrowing connection to " + id.name(), e);
+            // Wait for a healthy idle connection with bounded retry in case a
+            // creator failed while a previously borrowed connection is returned.
+            for (int retries = 0; retries < 3; retries++) {
+                try {
+                    conn = queue.poll(borrowTimeoutMs, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted while borrowing connection to " + id.name(), e);
+                }
+                if (conn == null) {
+                    throw new RuntimeException("Connection pool exhausted for " + id.name());
+                }
+                if (conn.healthy()) {
+                    conn.markBorrowed();
+                    incActiveCount(id);
+                    permitOwned = false;
+                    return conn;
+                }
+                conn.close();
             }
-            if (conn == null) {
-                throw new RuntimeException("Connection pool exhausted for " + id.name());
+            throw new RuntimeException("No healthy connection available for " + id.name() + " after retries");
+        } finally {
+            if (permitOwned) {
+                permits.release();
             }
-            if (conn.healthy()) {
-                conn.markBorrowed();
-                incActiveCount(id);
-                return conn;
-            }
-            conn.close();
-            decActiveCount(id);
         }
-        throw new RuntimeException("No healthy connection available for " + id.name() + " after retries");
     }
 
     @Override
@@ -118,13 +130,19 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         if (conn == null) return;
         DataSourceId id = conn.dataSourceId();
         BlockingQueue<BackendConnection> queue = idleQueues.get(id);
+        if (!conn.markReleased()) {
+            log.warn("Ignoring duplicate release for connection to {}", id.name());
+            return;
+        }
         if (queue == null) {
             conn.close();
+            releasePermit(id);
             return;
         }
         conn.markUsed();
         decActiveCount(id);
         queue.offer(conn);
+        releasePermit(id);
         log.debug("Released connection to {}", id.name());
     }
 
@@ -134,7 +152,10 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         DataSourceId id = conn.dataSourceId();
         conn.markUnhealthy();
         conn.close();
-        decActiveCount(id);
+        if (conn.markReleased()) {
+            decActiveCount(id);
+            releasePermit(id);
+        }
         log.info("Invalidated connection to {}", id.name());
     }
 
@@ -158,7 +179,6 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
             entry.getValue().removeIf(conn -> {
                 if (now - conn.lastUsedAt() > idleTimeoutMs) {
                     conn.close();
-                    decActiveCount(entry.getKey());
                     log.debug("Evicted idle connection to {}", entry.getKey().name());
                     return true;
                 }
@@ -177,6 +197,24 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         if (c != null) {
             // floor at 0 to prevent underflow
             c.updateAndGet(v -> v > 0 ? v - 1 : 0);
+        }
+    }
+
+    private void acquirePermit(DataSourceId id, Semaphore permits) {
+        try {
+            if (!permits.tryAcquire(borrowTimeoutMs, TimeUnit.MILLISECONDS)) {
+                throw new RuntimeException("Connection pool exhausted for " + id.name());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while borrowing connection to " + id.name(), e);
+        }
+    }
+
+    private void releasePermit(DataSourceId id) {
+        Semaphore permits = borrowPermits.get(id);
+        if (permits != null) {
+            permits.release();
         }
     }
 

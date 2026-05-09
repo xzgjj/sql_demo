@@ -6,12 +6,15 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Positive;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/orders")
 @Tag(name = "Orders", description = "订单管理")
+@Validated
 public class OrderController {
     private final OrderService orderService;
 
@@ -31,7 +34,7 @@ public class OrderController {
     @GetMapping
     @Operation(summary = "查询订单列表", description = "按用户ID查询订单，支持状态筛选和分页。")
     public ResponseEntity<ApiResponse<OrderService.OrderListPage>> listOrders(
-            @RequestHeader("X-User-Id") Long userId,
+            @RequestHeader("X-User-Id") @Positive Long userId,
             @RequestParam(name = "status", required = false) Integer status,
             @RequestParam(name = "page", defaultValue = "1") int page,
             @RequestParam(name = "pageSize", defaultValue = "20") int pageSize) {
@@ -43,8 +46,8 @@ public class OrderController {
     @GetMapping("/{orderId}")
     @Operation(summary = "查询订单详情", description = "返回订单、明细、支付、履约和状态时间线。")
     public ResponseEntity<ApiResponse<OrderService.OrderDetail>> getOrder(
-            @PathVariable("orderId") Long orderId,
-            @RequestHeader(name = "X-User-Id", required = false) Long userId) {
+            @PathVariable("orderId") @Positive Long orderId,
+            @RequestHeader(name = "X-User-Id", required = false) @Positive Long userId) {
         return ResponseEntity.ok(ApiResponse.ok(orderService.getOrder(orderId, userId)));
     }
 
@@ -57,9 +60,9 @@ public class OrderController {
     @PostMapping("/{orderId}/cancel")
     @Operation(summary = "取消订单", description = "待支付取消释放库存，已支付取消进入退款中。已发货不可取消。")
     public ResponseEntity<ApiResponse<Void>> cancelOrder(
-            @PathVariable("orderId") Long orderId,
+            @PathVariable("orderId") @Positive Long orderId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @RequestHeader("X-User-Id") Long userId,
+            @RequestHeader("X-User-Id") @Positive Long userId,
             @Valid @RequestBody CancelOrderRequest request) {
         orderService.cancelOrder(orderId, request.reason(), idempotencyKey, userId);
         return ResponseEntity.ok(ApiResponse.ok(null));

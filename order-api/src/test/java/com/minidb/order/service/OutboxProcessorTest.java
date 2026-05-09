@@ -31,7 +31,8 @@ class OutboxProcessorTest {
     void shouldClaimAndDeliverOrderPaidEvent() {
         long orderId = seedPaidOrder();
         jdbc.update("INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload, status) " +
-            "VALUES ('ORDER_PAID', 'ORDER', ?, ?, 10)", orderId, "{\"order_id\":" + orderId + "}");
+            "VALUES ('ORDER_PAID', 'ORDER', ?, ?, 10)", orderId,
+            "{\"order_id\":" + orderId + ",\"user_id\":501}");
 
         outboxProcessor.processOutbox();
 

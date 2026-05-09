@@ -399,8 +399,8 @@ public class ConsoleService {
     }
 
     private void markOrderException(CreatedOrder order, String reason) {
-        int affected = jdbc.update("UPDATE orders SET status = ?, version = version + 1 WHERE id = ? AND status = ?",
-                OrderStatus.EXCEPTION.getCode(), order.orderId(), OrderStatus.PENDING_PAYMENT.getCode());
+        int affected = jdbc.update("UPDATE orders SET status = ?, version = version + 1 WHERE id = ? AND user_id = ? AND status = ?",
+                OrderStatus.EXCEPTION.getCode(), order.orderId(), order.userId(), OrderStatus.PENDING_PAYMENT.getCode());
         if (affected > 0) {
             jdbc.update("INSERT INTO order_status_logs (order_id, order_no, from_status, to_status, operator, reason) " +
                             "VALUES (?, ?, ?, ?, 'SYSTEM', ?)",

@@ -5,7 +5,9 @@ import com.minidb.order.service.PaymentService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Positive;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -13,6 +15,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api")
 @Tag(name = "Payments", description = "支付管理")
+@Validated
 public class PaymentController {
     private final PaymentService paymentService;
 
@@ -23,8 +26,8 @@ public class PaymentController {
     @PostMapping("/orders/{orderId}/payments")
     @Operation(summary = "创建支付单")
     public ResponseEntity<ApiResponse<Map<String, String>>> createPayment(
-            @PathVariable("orderId") Long orderId,
-            @RequestHeader("X-User-Id") Long userId,
+            @PathVariable("orderId") @Positive Long orderId,
+            @RequestHeader("X-User-Id") @Positive Long userId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam(name = "channel", defaultValue = "mock_pay") String channel) {
         String paymentNo = paymentService.createPayment(orderId, userId, channel, idempotencyKey);

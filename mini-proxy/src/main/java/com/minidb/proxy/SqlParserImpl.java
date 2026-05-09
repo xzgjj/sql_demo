@@ -6,6 +6,7 @@ import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
 import com.alibaba.druid.sql.ast.expr.SQLIntegerExpr;
+import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.expr.SQLValuableExpr;
 import com.alibaba.druid.sql.ast.statement.*;
 import com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlInsertStatement;
@@ -57,6 +58,11 @@ public class SqlParserImpl {
             List<SQLStatement> stmts = SQLUtils.parseStatements(sql, JdbcConstants.MYSQL);
             if (stmts.isEmpty()) {
                 return new ParsedSql(SqlType.OTHER, Set.of(), null, null, AltRouteType.NONE, false, sql, false, false);
+            }
+            if (stmts.size() != 1) {
+                log.debug("Reject multi-statement SQL for routing safety: {}", sql);
+                return new ParsedSql(SqlType.SELECT, Set.of("__unsafe_route__"),
+                        null, null, AltRouteType.NONE, false, sql, false, false);
             }
             SQLStatement stmt = stmts.get(0);
 
@@ -137,6 +143,9 @@ public class SqlParserImpl {
         if (userIdIdx < 0) return null;
 
         List<SQLInsertStatement.ValuesClause> valuesList = stmt.getValuesList();
+        if (valuesList.size() != 1) {
+            return null;
+        }
         if (valuesList.isEmpty()) return null;
         List<SQLExpr> values = valuesList.get(0).getValues();
         if (userIdIdx >= values.size()) return null;
@@ -155,8 +164,7 @@ public class SqlParserImpl {
                 Long rightId = extractUserIdFromExpr(binaryOp.getRight());
                 if (leftVal != null && rightId != null) return leftVal;
             }
-            if (binaryOp.getOperator().isLogical()) {
-                // Try left branch first
+            if (isAnd(binaryOp)) {
                 Long result = extractFromWhere(binaryOp.getLeft());
                 if (result != null) return result;
                 return extractFromWhere(binaryOp.getRight());
@@ -188,7 +196,7 @@ public class SqlParserImpl {
                 AltRouteResult right = extractAltRouteKeyExpr(binaryOp.getRight(), binaryOp.getLeft());
                 if (right != null) return right;
             }
-            if (binaryOp.getOperator().isLogical()) {
+            if (isAnd(binaryOp)) {
                 AltRouteResult left = extractAltRouteFromWhere(binaryOp.getLeft());
                 if (left != null) return left;
                 return extractAltRouteFromWhere(binaryOp.getRight());
@@ -200,6 +208,17 @@ public class SqlParserImpl {
     private AltRouteResult extractAltRouteKeyExpr(SQLExpr nameExpr, SQLExpr valueExpr) {
         if (nameExpr instanceof SQLIdentifierExpr idExpr) {
             String name = idExpr.getName().replace("`", "").toLowerCase();
+            if ("order_no".equals(name)) {
+                String val = extractStringValue(valueExpr);
+                if (val != null) return new AltRouteResult(val, AltRouteType.ORDER_NO);
+            }
+            if ("payment_no".equals(name)) {
+                String val = extractStringValue(valueExpr);
+                if (val != null) return new AltRouteResult(val, AltRouteType.PAYMENT_NO);
+            }
+        }
+        if (nameExpr instanceof SQLPropertyExpr propertyExpr) {
+            String name = propertyExpr.getName().replace("`", "").toLowerCase();
             if ("order_no".equals(name)) {
                 String val = extractStringValue(valueExpr);
                 if (val != null) return new AltRouteResult(val, AltRouteType.ORDER_NO);
@@ -230,7 +249,15 @@ public class SqlParserImpl {
             String name = idExpr.getName().replace("`", "").toLowerCase();
             if ("user_id".equals(name)) return 0L; // marker — found user_id reference
         }
+        if (expr instanceof SQLPropertyExpr propertyExpr) {
+            String name = propertyExpr.getName().replace("`", "").toLowerCase();
+            if ("user_id".equals(name)) return 0L;
+        }
         return null;
+    }
+
+    private boolean isAnd(SQLBinaryOpExpr binaryOp) {
+        return "AND".equalsIgnoreCase(binaryOp.getOperator().getName());
     }
 
     private Long extractIntegerValue(SQLExpr expr) {

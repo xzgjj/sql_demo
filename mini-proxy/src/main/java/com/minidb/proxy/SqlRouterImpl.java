@@ -32,17 +32,17 @@ public class SqlRouterImpl {
             return RoutePlan.sessionOnlyPlan();
         }
 
-        // PRIMARY-only tables: always route to PRIMARY, no shard key needed
-        if (sql.isPrimaryOnly()) {
-            return RoutePlan.toDataSource(DataSourceId.PRIMARY, null);
-        }
-
         // Resolve shard key (may trigger two-phase routing via order_route lookup)
         Long shardKey = resolveShardKey(session, sql);
 
         // Inside a transaction: bind to existing connection or assign one
         if (session.inTransaction()) {
             return routeWithinTransaction(session, sql, shardKey);
+        }
+
+        // PRIMARY-only tables: always route to PRIMARY, no shard key needed
+        if (sql.isPrimaryOnly()) {
+            return RoutePlan.toDataSource(DataSourceId.PRIMARY, null);
         }
 
         // Outside a transaction
@@ -89,40 +89,51 @@ public class SqlRouterImpl {
     private RoutePlan routeWithinTransaction(ProxySession session, ParsedSql sql, Long shardKey) {
         DataSourceId boundDs = session.boundConnection() != null
                 ? session.boundConnection().dataSourceId() : null;
+        RoutePlan requestedPlan = requestedPlanWithinTransaction(sql, shardKey);
 
-        // Already bound: must stay within same shard
-        if (boundDs != null && session.boundShardId() >= 0) {
-            if (shardKey != null) {
-                int requestShardId = (int) (shardKey % shardCount);
-                if (requestShardId != session.boundShardId()) {
-                    String msg = String.format(
-                            "CROSS_SHARD_UNSUPPORTED: transaction bound to shard_%d, but request targets shard_%d (user_id=%d %% %d = %d)",
-                            session.boundShardId(), requestShardId,
-                            shardKey, shardCount, requestShardId);
-                    log.warn(msg);
-                    throw new CrossShardException(CROSS_SHARD_TXN, msg);
-                }
+        // Already bound: must stay on the same physical data source.
+        if (boundDs != null) {
+            if (!boundDs.equals(requestedPlan.dataSourceId())) {
+                String msg = String.format(
+                        "CROSS_DATASOURCE_TX_UNSUPPORTED: transaction bound to %s, but request targets %s",
+                        boundDs.name(), requestedPlan.dataSourceId().name());
+                log.warn(msg);
+                throw new CrossShardException(CROSS_SHARD_TXN, msg);
             }
-            return RoutePlan.toDataSource(boundDs, session.boundShardId());
+            if (requestedPlan.shardId() != null
+                    && session.boundShardId() >= 0
+                    && !requestedPlan.shardId().equals(session.boundShardId())) {
+                String msg = String.format(
+                        "CROSS_SHARD_UNSUPPORTED: transaction bound to shard_%d, but request targets shard_%d (user_id=%d %% %d = %d)",
+                        session.boundShardId(), requestedPlan.shardId(),
+                        shardKey, shardCount, requestedPlan.shardId());
+                log.warn(msg);
+                throw new CrossShardException(CROSS_SHARD_TXN, msg);
+            }
+            return RoutePlan.toDataSource(boundDs, session.boundShardId() >= 0 ? session.boundShardId() : null);
         }
 
-        // Not yet bound: assign based on SQL.
+        return requestedPlan;
+    }
+
+    private RoutePlan requestedPlanWithinTransaction(ParsedSql sql, Long shardKey) {
+        if (sql.isPrimaryOnly()) {
+            return RoutePlan.toDataSource(DataSourceId.PRIMARY, null);
+        }
+
         // Non-DML commands (SET, SHOW) inside tx without a bound connection:
         // default to PRIMARY without requiring shard key.
         if (!sql.isWrite() && !sql.isRead()) {
             return RoutePlan.toDataSource(DataSourceId.PRIMARY, null);
         }
 
-        DataSourceId ds = resolveWriteDataSource(sql, shardKey);
         Integer shardId = resolveShardIdFromKey(shardKey);
-
         if (shardId == null) {
             throw new CrossShardException(MISSING_SHARD_KEY,
                     "MISSING_SHARD_KEY: shard key (user_id) required within transaction. "
                     + "Provide user_id or one of order_no/payment_no for route lookup.");
         }
-
-        return RoutePlan.toDataSource(ds, shardId);
+        return RoutePlan.toDataSource(resolveWriteDataSource(sql, shardKey), shardId);
     }
 
     private RoutePlan routeOutsideTransaction(ProxySession session, ParsedSql sql, Long shardKey) {
@@ -181,7 +192,11 @@ public class SqlRouterImpl {
 
     private Integer resolveShardIdFromKey(Long key) {
         if (key == null) return null;
-        return (int) (key % shardCount);
+        if (key < 0) {
+            throw new CrossShardException(MISSING_SHARD_KEY,
+                    "INVALID_SHARD_KEY: user_id must be non-negative");
+        }
+        return (int) Math.floorMod(key, shardCount);
     }
 
     public static class CrossShardException extends RuntimeException {

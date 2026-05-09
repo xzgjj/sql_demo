@@ -37,24 +37,29 @@ public class PaymentService {
     private final IdempotencyService idempotencyService;
     private final String mockSignSecret;
     private final ObjectMapper objectMapper;
+    private final boolean proxyMode;
 
     public PaymentService(JdbcTemplate jdbc, OrderService orderService,
                           IdempotencyService idempotencyService, ObjectMapper objectMapper,
-                          @Value("${minidb.payment.mock-sign-secret}") String mockSignSecret) {
+                          @Value("${minidb.payment.mock-sign-secret}") String mockSignSecret,
+                          @Value("${minidb.order.proxy-mode:false}") boolean proxyMode) {
         this.jdbc = jdbc;
         this.orderService = orderService;
         this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
         this.mockSignSecret = mockSignSecret;
+        this.proxyMode = proxyMode;
     }
 
     @Transactional
     public String createPayment(Long orderId, Long userId, String channel) {
+        rejectProxyWrite("create payments");
         return createPaymentCore(orderId, userId, channel);
     }
 
     @Transactional
     public String createPayment(Long orderId, Long userId, String channel, String idempotencyKey) {
+        rejectProxyWrite("create payments");
         String requestBody = toJson(Map.of("orderId", orderId, "userId", userId, "channel", channel));
         String cached = idempotencyService.tryAcquire(idempotencyKey, "USER", userId, requestBody);
         if (cached != null) {
@@ -79,6 +84,7 @@ public class PaymentService {
     }
 
     private String createPaymentCore(Long orderId, Long userId, String channel) {
+        rejectProxyWrite("create payments");
         var order = Objects.requireNonNull(jdbc.query(
             "SELECT order_no, status, total_amount FROM orders WHERE id = ? AND user_id = ?",
             rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found");
@@ -102,11 +108,13 @@ public class PaymentService {
 
     @Transactional
     public void handleCallback(PaymentCallbackRequest req) {
+        rejectProxyWrite("handle payment callbacks");
         handleCallbackCore(req);
     }
 
     @Transactional
     public void handleCallback(PaymentCallbackRequest req, String idempotencyKey) {
+        rejectProxyWrite("handle payment callbacks");
         String requestBody = toJson(req);
         String cached = idempotencyService.tryAcquire(idempotencyKey, "PAYMENT", 0L, requestBody);
         if (cached != null) return;
@@ -120,6 +128,7 @@ public class PaymentService {
     }
 
     private void handleCallbackCore(PaymentCallbackRequest req) {
+        rejectProxyWrite("handle payment callbacks");
         log.info("Payment callback: paymentNo={}, amount={}", req.paymentNo(), req.amount());
         if (!verifySignature(req)) throw new BusinessException("PAYMENT_SIGNATURE_INVALID", "Invalid payment signature");
 
@@ -160,13 +169,15 @@ public class PaymentService {
             PaymentStatus.SUCCESS.getCode(), req.paidAt(), req.channelTradeNo(), toJson(req), paymentId, PaymentStatus.PENDING.getCode());
         if (pUpd == 0) throw new BusinessException("PAYMENT_STATUS_CHANGED", "Payment status already changed");
 
-        int oUpd = jdbc.update("UPDATE orders SET status=?, paid_amount=?, paid_at=?, version=version+1 WHERE id=? AND status=?",
-            OrderStatus.PAID.getCode(), req.amount(), req.paidAt(), orderId, OrderStatus.PENDING_PAYMENT.getCode());
+        int oUpd = jdbc.update("UPDATE orders SET status=?, paid_amount=?, paid_at=?, version=version+1 WHERE id=? AND user_id=? AND status=?",
+            OrderStatus.PAID.getCode(), req.amount(), req.paidAt(), orderId, userId, OrderStatus.PENDING_PAYMENT.getCode());
         if (oUpd == 0) {
-            var cur = jdbc.query("SELECT status FROM orders WHERE id=?", rs -> rs.next() ? rs.getInt("status") : null, orderId);
+            var cur = jdbc.query("SELECT status FROM orders WHERE id=? AND user_id=?",
+                    rs -> rs.next() ? rs.getInt("status") : null, orderId, userId);
             if (cur != null && cur == OrderStatus.CANCELLED.getCode()) {
                 writeException("PAYMENT", req.paymentNo(), "ORDER_ALREADY_CANCELLED", "Payment succeeded but order cancelled");
-                jdbc.update("UPDATE payments SET status=? WHERE id=?", PaymentStatus.REFUNDING.getCode(), paymentId);
+                jdbc.update("UPDATE payments SET status=?, version=version+1 WHERE id=? AND user_id=? AND status=?",
+                        PaymentStatus.REFUNDING.getCode(), paymentId, userId, PaymentStatus.SUCCESS.getCode());
             }
             return;
         }
@@ -175,9 +186,10 @@ public class PaymentService {
             orderId, orderNo, OrderStatus.PENDING_PAYMENT.getCode(), OrderStatus.PAID.getCode());
 
         try {
-            Map<String, String> payload = new LinkedHashMap<>();
+            Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("order_no", orderNo);
             payload.put("payment_no", req.paymentNo());
+            payload.put("user_id", userId);
             orderService.writeOutbox("ORDER_PAID", "ORDER", orderId, objectMapper.writeValueAsString(payload));
         } catch (Exception e) { log.error("Failed to write outbox", e); }
         log.info("Payment callback processed: paymentNo={}", req.paymentNo());
@@ -213,5 +225,12 @@ public class PaymentService {
 
     private String toJson(Object obj) {
         try { return objectMapper.writeValueAsString(obj); } catch (Exception e) { return "{}"; }
+    }
+
+    private void rejectProxyWrite(String action) {
+        if (proxyMode) {
+            throw new BusinessException("PROXY_MODE_UNSUPPORTED_WRITE",
+                    "Cannot " + action + " in proxy mode because the workflow spans PRIMARY metadata tables and sharded payment/order tables without XA.");
+        }
     }
 }

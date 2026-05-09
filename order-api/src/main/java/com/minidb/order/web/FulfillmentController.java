@@ -5,12 +5,15 @@ import com.minidb.order.service.FulfillmentService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Positive;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/fulfillment")
 @Tag(name = "Fulfillment", description = "履约管理")
+@Validated
 public class FulfillmentController {
     private final FulfillmentService fulfillmentService;
 
@@ -31,15 +34,15 @@ public class FulfillmentController {
 
     @GetMapping("/tasks/{taskId}")
     @Operation(summary = "查询任务详情")
-    public ResponseEntity<ApiResponse<FulfillmentService.TaskInfo>> getTask(@PathVariable("taskId") Long taskId) {
+    public ResponseEntity<ApiResponse<FulfillmentService.TaskInfo>> getTask(@PathVariable("taskId") @Positive Long taskId) {
         return ResponseEntity.ok(ApiResponse.ok(fulfillmentService.getTask(taskId)));
     }
 
     @PostMapping("/tasks/{taskId}/claim")
     @Operation(summary = "领取任务", description = "使用乐观锁防并发。需提供当前version。")
     public ResponseEntity<ApiResponse<Void>> claimTask(
-            @PathVariable("taskId") Long taskId,
-            @RequestHeader("X-User-Id") Long userId,
+            @PathVariable("taskId") @Positive Long taskId,
+            @RequestHeader("X-User-Id") @Positive Long userId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam(name = "version") int version) {
         fulfillmentService.claimTask(taskId, userId, version, idempotencyKey);
@@ -49,8 +52,8 @@ public class FulfillmentController {
     @PostMapping("/tasks/{taskId}/pick")
     @Operation(summary = "拣货完成", description = "将任务从PICKING变为PICKED。只有当前认领人可操作。必须携带 Idempotency-Key。")
     public ResponseEntity<ApiResponse<Void>> pickTask(
-            @PathVariable("taskId") Long taskId,
-            @RequestHeader("X-User-Id") Long userId,
+            @PathVariable("taskId") @Positive Long taskId,
+            @RequestHeader("X-User-Id") @Positive Long userId,
             @RequestHeader("Idempotency-Key") String idempotencyKey) {
         fulfillmentService.pickTask(taskId, userId, idempotencyKey);
         return ResponseEntity.ok(ApiResponse.ok(null));
@@ -59,8 +62,8 @@ public class FulfillmentController {
     @PostMapping("/tasks/{taskId}/ship")
     @Operation(summary = "发货", description = "事务内更新任务、订单、发货记录、库存。")
     public ResponseEntity<ApiResponse<Void>> shipOrder(
-            @PathVariable("taskId") Long taskId,
-            @RequestHeader("X-User-Id") Long userId,
+            @PathVariable("taskId") @Positive Long taskId,
+            @RequestHeader("X-User-Id") @Positive Long userId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody ShipOrderRequest request) {
         fulfillmentService.shipOrder(taskId, request.carrier(), request.trackingNo(), userId, idempotencyKey);

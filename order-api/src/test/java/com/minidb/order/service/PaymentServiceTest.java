@@ -75,6 +75,39 @@ class PaymentServiceTest {
         assertEquals(1, exceptionCount);
     }
 
+    @Test
+    void shouldWriteUserIdIntoOrderPaidOutboxPayload() {
+        long userId = 603L;
+        long orderId = seedPendingPaymentOrder(userId);
+        String paymentNo = paymentService.createPayment(orderId, userId, "mock_pay");
+        LocalDateTime paidAt = LocalDateTime.now();
+        BigDecimal amount = new BigDecimal("89.00");
+        var callback = new PaymentCallbackRequest(
+            paymentNo,
+            "trade-" + paymentNo,
+            amount,
+            paidAt,
+            "SUCCESS",
+            sign(paymentNo, amount, "SUCCESS", paidAt)
+        );
+
+        paymentService.handleCallback(callback);
+
+        String payload = jdbc.queryForObject(
+            "SELECT payload FROM outbox_events WHERE event_type = 'ORDER_PAID' AND aggregate_id = ?",
+            String.class, orderId);
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            com.fasterxml.jackson.databind.JsonNode node = mapper.readTree(payload);
+            if (node.isTextual()) {
+                node = mapper.readTree(node.asText());
+            }
+            assertEquals(userId, node.get("user_id").asLong());
+        } catch (Exception e) {
+            throw new AssertionError("Failed to parse ORDER_PAID payload: " + payload, e);
+        }
+    }
+
     private long seedPendingPaymentOrder(long userId) {
         String orderNo = "ORD" + System.nanoTime();
         jdbc.update("INSERT INTO orders (order_no, user_id, status, total_amount, remark, expires_at, version) " +

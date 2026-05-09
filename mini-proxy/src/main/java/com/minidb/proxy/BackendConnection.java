@@ -21,6 +21,7 @@ public class BackendConnection {
     private volatile boolean healthy;
     private volatile Channel clientChannel;
     private final AtomicInteger suppressedResponses = new AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicBoolean borrowed = new java.util.concurrent.atomic.AtomicBoolean();
 
     public BackendConnection(DataSourceId dataSourceId, Channel channel) {
         this.dataSourceId = dataSourceId;
@@ -38,7 +39,14 @@ public class BackendConnection {
     public void markUnhealthy() { this.healthy = false; }
 
     public long borrowedAt() { return borrowedAt; }
-    public void markBorrowed() { this.borrowedAt = System.currentTimeMillis(); }
+    public void markBorrowed() {
+        this.borrowedAt = System.currentTimeMillis();
+        borrowed.set(true);
+    }
+
+    public boolean markReleased() {
+        return borrowed.getAndSet(false);
+    }
 
     public long lastUsedAt() { return lastUsedAt; }
     public void markUsed() { this.lastUsedAt = System.currentTimeMillis(); }

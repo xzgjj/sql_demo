@@ -56,22 +56,17 @@ class BackendConnectionPoolTest {
     }
 
     @Test
-    void shouldReleaseConnectionToIdle() {
+    void shouldIgnoreReleaseForConnectionNotBorrowedFromPool() {
         DataSourceId id = new DataSourceId("test");
         pool.registerDataSource(id,
                 new BackendConnectionPoolImpl.BackendServerConfig("127.0.0.1", 3306), 2);
 
-        // Borrow with no real backend will eventually wait on the queue
-        // Just testing release logic
         Channel mockChannel = new io.netty.channel.embedded.EmbeddedChannel();
         BackendConnection conn = new BackendConnection(id, mockChannel);
 
+        assertDoesNotThrow(() -> pool.release(conn));
         pool.release(conn);
-        // Connection should be idle and reusable
-        BackendConnection reused = pool.borrow(id);
-        assertNotNull(reused);
-        assertEquals(id, reused.dataSourceId());
-        pool.release(reused);
+        assertEquals(0, pool.activeCount(id));
     }
 
     @Test

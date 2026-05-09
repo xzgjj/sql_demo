@@ -168,7 +168,7 @@ class SqlRouterImplTest {
     }
 
     @Test
-    void shouldRoutePrimaryOnlyTableToPrimaryEvenInTransaction() {
+    void shouldRejectPrimaryOnlyTableWhenTransactionBoundToShard() {
         session.beginTransaction();
         // bind to shard first
         EmbeddedChannel ch = new EmbeddedChannel();
@@ -176,9 +176,31 @@ class SqlRouterImplTest {
         session.bind(0, conn);
 
         ParsedSql sql = primaryOnlySql();
-        RoutePlan plan = router.route(session, sql);
-        assertEquals(DataSourceId.PRIMARY, plan.dataSourceId());
+        SqlRouterImpl.CrossShardException ex = assertThrows(SqlRouterImpl.CrossShardException.class,
+                () -> router.route(session, sql));
+        assertEquals(SqlRouterImpl.CROSS_SHARD_TXN, ex.errorCode());
         ch.close();
+    }
+
+    @Test
+    void shouldRejectShardTableWhenTransactionBoundToPrimary() {
+        session.beginTransaction();
+        EmbeddedChannel ch = new EmbeddedChannel();
+        BackendConnection conn = new BackendConnection(DataSourceId.PRIMARY, ch);
+        session.bind(-1, conn);
+
+        SqlRouterImpl.CrossShardException ex = assertThrows(SqlRouterImpl.CrossShardException.class,
+                () -> router.route(session, selectWithShardKey(100)));
+        assertEquals(SqlRouterImpl.CROSS_SHARD_TXN, ex.errorCode());
+        ch.close();
+    }
+
+    @Test
+    void shouldRoutePrimaryOnlyTableToPrimaryWhenTransactionUnbound() {
+        session.beginTransaction();
+        RoutePlan plan = router.route(session, primaryOnlySql());
+        assertEquals(DataSourceId.PRIMARY, plan.dataSourceId());
+        assertNull(plan.shardId());
     }
 
     @Test
@@ -196,5 +218,12 @@ class SqlRouterImplTest {
         assertEquals(1, router.route(session, insertWithShardKey(101)).shardId()); // 101%4=1
         assertEquals(2, router.route(session, insertWithShardKey(102)).shardId()); // 102%4=2
         assertEquals(3, router.route(session, insertWithShardKey(103)).shardId()); // 103%4=3
+    }
+
+    @Test
+    void shouldRejectNegativeShardKey() {
+        SqlRouterImpl.CrossShardException ex = assertThrows(SqlRouterImpl.CrossShardException.class,
+                () -> router.route(session, insertWithShardKey(-1)));
+        assertEquals(SqlRouterImpl.MISSING_SHARD_KEY, ex.errorCode());
     }
 }

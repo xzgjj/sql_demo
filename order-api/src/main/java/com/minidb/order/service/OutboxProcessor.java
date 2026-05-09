@@ -1,10 +1,15 @@
 package com.minidb.order.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.minidb.order.BusinessException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+
+import java.time.LocalDateTime;
 
 /**
  * Outbox事件处理器。
@@ -16,10 +21,12 @@ public class OutboxProcessor {
     private static final Logger log = LoggerFactory.getLogger(OutboxProcessor.class);
     private final JdbcTemplate jdbc;
     private final FulfillmentService fulfillmentService;
+    private final ObjectMapper objectMapper;
 
-    public OutboxProcessor(JdbcTemplate jdbc, FulfillmentService fulfillmentService) {
+    public OutboxProcessor(JdbcTemplate jdbc, FulfillmentService fulfillmentService, ObjectMapper objectMapper) {
         this.jdbc = jdbc;
         this.fulfillmentService = fulfillmentService;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -43,6 +50,7 @@ public class OutboxProcessor {
             long eventId = (long) event[0];
             String eventType = (String) event[1];
             long aggregateId = (long) event[3];
+            String payload = (String) event[4];
             int retryCount = (int) event[5];
 
             try {
@@ -54,7 +62,8 @@ public class OutboxProcessor {
                 }
 
                 switch (eventType) {
-                    case "ORDER_PAID" -> fulfillmentService.createTaskFromOrderPaid(aggregateId);
+                    case "ORDER_PAID" -> fulfillmentService.createTaskFromOrderPaid(
+                            aggregateId, extractRequiredUserId(eventId, payload));
                     default -> log.debug("No handler for event type: {}", eventType);
                 }
 
@@ -64,16 +73,42 @@ public class OutboxProcessor {
             } catch (Exception e) {
                 log.error("Failed to process outbox event {}: {}", eventId, e.getMessage());
                 int nextRetry = Math.min(retryCount + 1, 5);
+                int delaySeconds = (int) Math.pow(2, nextRetry) * 10;
                 jdbc.update(
                     "UPDATE outbox_events SET status = 10, retry_count = ?, " +
-                    "next_retry_at = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE id = ? AND status = 20",
-                    nextRetry, (int) Math.pow(2, nextRetry) * 10, eventId
+                    "next_retry_at = ? WHERE id = ? AND status = 20",
+                    nextRetry, LocalDateTime.now().plusSeconds(delaySeconds), eventId
                 );
                 if (nextRetry >= 5) {
                     jdbc.update("UPDATE outbox_events SET status = 40 WHERE id = ? AND status = 10", eventId);
                     log.error("Outbox event {} exhausted retries", eventId);
                 }
             }
+        }
+    }
+
+    private Long extractRequiredUserId(long eventId, String payload) {
+        try {
+            JsonNode root = objectMapper.readTree(payload);
+            if (root.isTextual()) {
+                root = objectMapper.readTree(root.asText());
+            }
+            JsonNode userIdNode = root.get("user_id");
+            if (userIdNode == null || !userIdNode.canConvertToLong()) {
+                throw new BusinessException("OUTBOX_ROUTE_KEY_MISSING",
+                        "ORDER_PAID outbox event " + eventId + " must contain user_id");
+            }
+            long userId = userIdNode.asLong();
+            if (userId <= 0) {
+                throw new BusinessException("OUTBOX_ROUTE_KEY_INVALID",
+                        "ORDER_PAID outbox event " + eventId + " has invalid user_id");
+            }
+            return userId;
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException("OUTBOX_PAYLOAD_INVALID",
+                    "ORDER_PAID outbox event " + eventId + " payload is not valid JSON", e);
         }
     }
 }

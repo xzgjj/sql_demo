@@ -48,7 +48,7 @@ class OrderServiceProxyModeTest {
 
     @Test
     void shouldRequireUserIdForOrderDetailInProxyMode() {
-        createTestOrder("proxy-detail-key-1");
+        seedTestOrder();
         long orderId = orderService.listOrders(userId, null, 1, 1).items().get(0).orderId();
 
         BusinessException ex = assertThrows(BusinessException.class, () -> orderService.getOrder(orderId));
@@ -66,9 +66,24 @@ class OrderServiceProxyModeTest {
         assertEquals("PROXY_MODE_UNSUPPORTED_QUERY", ex.getErrorCode());
     }
 
-    private void createTestOrder(String idempotencyKey) {
+    @Test
+    void shouldRejectOrderWritesInProxyMode() {
         var req = new CreateOrderRequest(userId,
                 List.of(new CreateOrderRequest.OrderItemRequest(1001L, 1)), null);
-        orderService.createOrder(req, idempotencyKey);
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> orderService.createOrder(req, "proxy-create-key-1"));
+        assertEquals("PROXY_MODE_UNSUPPORTED_WRITE", ex.getErrorCode());
+    }
+
+    private void seedTestOrder() {
+        String orderNo = "ORD" + System.nanoTime();
+        jdbc.update("INSERT INTO orders (order_no, user_id, status, total_amount, remark, expires_at, version) " +
+                        "VALUES (?, ?, 10, 89.00, 'proxy test', NOW() + INTERVAL '30' MINUTE, 0)",
+                orderNo, userId);
+        long orderId = jdbc.queryForObject("SELECT id FROM orders WHERE order_no = ?", Long.class, orderNo);
+        jdbc.update("INSERT INTO order_items (user_id, order_id, product_id, product_sku, product_name, unit_price, quantity, line_amount) " +
+                "VALUES (?, ?, 1001, 'SKU-1001', 'test product', 89.00, 1, 89.00)", userId, orderId);
+        jdbc.update("INSERT INTO order_status_logs (order_id, order_no, from_status, to_status, operator, reason) " +
+                "VALUES (?, ?, NULL, 10, 'SYSTEM', 'seed proxy test')", orderId, orderNo);
     }
 }

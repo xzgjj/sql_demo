@@ -361,7 +361,29 @@ sql_demo/
 | 模式 | 用途 | 数据源 | 查询边界 |
 | --- | --- | --- | --- |
 | 单库直连模式（默认） | 订单闭环、控制台聚合、演示数据、H2/本地 MySQL 快速验证 | `application.yml` 中的 MySQL | 允许控制台全局聚合和按 `order_id` 查询 |
-| proxy 实验模式 | 验证 MySQL 协议、分片键路由、缺键拒绝和事务绑定 | `application-proxy.yml`，连接 `mini-proxy` | 分片表必须携带 `user_id`、`order_no` 或 `payment_no` |
+| proxy 实验模式 | 验证 MySQL 协议、分片键路由、缺键拒绝和事务绑定 | `application-proxy.yml`，连接 `mini-proxy` | 分片表必须携带 `user_id`、`order_no` 或 `payment_no`；订单履约写流程不在 proxy 模式执行 |
+
+### proxy 一致性边界
+
+proxy 模式采用保守一致性策略：`mini-proxy` 不实现 XA、2PC 或跨分片事务，因此一个逻辑事务只能绑定一个物理后端数据源。事务一旦绑定 `PRIMARY` 或某个 `shard_N`，后续访问其他数据源会返回明确错误；缺少分片键、`OR` 分片条件、多行写入、无法证明单分片的 SQL 也会被拒绝。
+
+订单履约完整写链路涉及 `products`、`product_inventory`、`idempotency_records`、`outbox_events`、`order_route` 等 PRIMARY 元数据表，以及 `orders`、`order_items`、`payments`、`fulfillment_tasks` 等分片业务表。当前项目没有分布式事务协调器，因此这些写流程仅在单库直连模式下作为完整业务闭环运行；proxy 模式用于验证分片路由、事务绑定、缺键拒绝、路由观测和只读/实验性查询。
+
+前端交互上需要向用户明确区分：
+
+- 订单履约终端：面向业务流程，使用单库直连模式，用户能创建订单、支付、取消、履约、查看异常和 outbox 状态。
+- 数据库实验终端：面向数据库学习，使用 proxy 实验模式，用户提交 SQL 后看到路由决策、绑定数据源、拒绝原因和事务状态。
+- 当用户在 proxy 模式尝试订单写流程时，接口返回 `PROXY_MODE_UNSUPPORTED_WRITE`，页面应展示“该流程跨 PRIMARY 与分片表，当前实验代理不支持跨数据源事务，请切回单库直连模式执行业务闭环”。
+
+本轮 P0/P1 验收标准：
+
+- 事务内不会出现多个后端连接参与同一逻辑事务。
+- 跨数据源、跨分片事务必须拒绝，并给出可观察错误。
+- `ORDER_PAID` outbox payload 必须携带 `user_id`，履约消费按 `order_id + user_id` 定位订单。
+- 危险 SQL，包括 `OR` 分片条件、多语句、多行 INSERT、负数 `user_id`，必须拒绝或降级为缺分片键错误。
+- 连接池并发借用必须受最大连接数许可控制。
+- 状态更新必须携带原状态条件，涉及分片表的关键更新同时携带 `user_id`。
+- `mvn -B verify`、`python tools/verify_local.py --json`、前端 lint/test 必须通过；真实 proxy 联调可用时再执行 `python tools/proxy_smoke.py --execute --json`。
 
 proxy 实验模式启动参考：
 
@@ -399,6 +421,18 @@ npm --prefix web-console run lint
 npm --prefix web-console run test
 python tools/verify_local.py --json
 ```
+
+本轮实际验证结果：
+
+- `mvn -pl mini-proxy test -B`：通过，73 个测试通过，1 个原有手工集成测试跳过。
+- `mvn -pl order-api -am test -B`：通过，46 个 order-api 测试和 28 个 mini-mvcc 测试通过。
+- `npm --prefix web-console run lint`：通过。
+- `npm --prefix web-console run test`：通过，2 个前端测试通过。
+- `npm --prefix web-console run build`：通过，TypeScript 编译和 Vite 构建成功。
+- `mvn -B verify`：通过，全 Maven reactor 成功。
+- `python tools/verify_local.py --json`：通过，包含环境、结构、proxy dry-run、后端测试、前端 lint/test 和 Maven verify。
+- `git diff --check`：通过，无空白错误。
+- `python tools/proxy_smoke.py --execute --json`：未执行；当前 Docker daemon 未启动，未发现可用的本地 MySQL/proxy 联调环境。本轮已保留 dry-run smoke 作为非破坏性验收，真实网络 smoke 需在后端环境启动后执行。
 
 
 

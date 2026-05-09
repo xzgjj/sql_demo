@@ -4,6 +4,7 @@ import com.minidb.order.FulfillmentStatus;
 import com.minidb.order.OrderStatus;
 import com.minidb.order.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -27,15 +28,18 @@ public class FulfillmentService {
     private final OrderService orderService;
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
+    private final boolean proxyMode;
 
     public FulfillmentService(JdbcTemplate jdbc, InventoryService inventoryService,
                               OrderService orderService, IdempotencyService idempotencyService,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              @Value("${minidb.order.proxy-mode:false}") boolean proxyMode) {
         this.jdbc = jdbc;
         this.inventoryService = inventoryService;
         this.orderService = orderService;
         this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
+        this.proxyMode = proxyMode;
     }
 
     /**
@@ -43,13 +47,23 @@ public class FulfillmentService {
      */
     @Transactional
     public void createTaskFromOrderPaid(long orderId) {
+        createTaskFromOrderPaid(orderId, null);
+    }
+
+    @Transactional
+    public void createTaskFromOrderPaid(long orderId, Long expectedUserId) {
+        rejectProxyWrite("create fulfillment tasks");
         var order = jdbc.query(
-            "SELECT order_no, user_id FROM orders WHERE id = ? AND status = ?",
+            expectedUserId == null
+                ? "SELECT order_no, user_id FROM orders WHERE id = ? AND status = ?"
+                : "SELECT order_no, user_id FROM orders WHERE id = ? AND user_id = ? AND status = ?",
             rs -> {
                 if (!rs.next()) return null;
                 return new Object[]{rs.getString("order_no"), rs.getLong("user_id")};
             },
-            orderId, OrderStatus.PAID.getCode()
+            expectedUserId == null
+                ? new Object[]{orderId, OrderStatus.PAID.getCode()}
+                : new Object[]{orderId, expectedUserId, OrderStatus.PAID.getCode()}
         );
         if (order == null) {
             log.warn("Order {} not in PAID status, skip task creation", orderId);
@@ -79,8 +93,8 @@ public class FulfillmentService {
 
         // 更新订单状态：已支付 → 待履约
         int orderUpdated = jdbc.update(
-            "UPDATE orders SET status = ?, version = version + 1 WHERE id = ? AND status = ?",
-            OrderStatus.PENDING_FULFILLMENT.getCode(), orderId, OrderStatus.PAID.getCode()
+            "UPDATE orders SET status = ?, version = version + 1 WHERE id = ? AND user_id = ? AND status = ?",
+            OrderStatus.PENDING_FULFILLMENT.getCode(), orderId, userId, OrderStatus.PAID.getCode()
         );
         if (orderUpdated == 0) {
             throw new BusinessException("ORDER_STATUS_CHANGED", "Order not in PAID status: " + orderId);
@@ -101,11 +115,13 @@ public class FulfillmentService {
      */
     @Transactional
     public void claimTask(long taskId, long userId, int expectedVersion) {
+        rejectProxyWrite("claim fulfillment tasks");
         claimTaskCore(taskId, userId, expectedVersion);
     }
 
     @Transactional
     public void claimTask(long taskId, long userId, int expectedVersion, String idempotencyKey) {
+        rejectProxyWrite("claim fulfillment tasks");
         String requestBody = toJson(Map.of("taskId", taskId, "userId", userId, "expectedVersion", expectedVersion));
         String cached = idempotencyService.tryAcquire(idempotencyKey, "USER", userId, requestBody);
         if (cached != null) return;
@@ -119,6 +135,7 @@ public class FulfillmentService {
     }
 
     private void claimTaskCore(long taskId, long userId, int expectedVersion) {
+        rejectProxyWrite("claim fulfillment tasks");
         int affected = jdbc.update(
             "UPDATE fulfillment_tasks SET status = ?, assignee_id = ?, claimed_at = NOW(), version = version + 1 " +
             "WHERE id = ? AND status = ? AND version = ?",
@@ -158,11 +175,13 @@ public class FulfillmentService {
      */
     @Transactional
     public void shipOrder(long taskId, String carrier, String trackingNo, long operatorId) {
+        rejectProxyWrite("ship orders");
         shipOrderCore(taskId, carrier, trackingNo, operatorId);
     }
 
     @Transactional
     public void shipOrder(long taskId, String carrier, String trackingNo, long operatorId, String idempotencyKey) {
+        rejectProxyWrite("ship orders");
         String requestBody = toJson(Map.of(
             "taskId", taskId,
             "carrier", carrier,
@@ -181,6 +200,7 @@ public class FulfillmentService {
     }
 
     private void shipOrderCore(long taskId, String carrier, String trackingNo, long operatorId) {
+        rejectProxyWrite("ship orders");
         // 1. 查询任务和关联订单
         var task = Objects.requireNonNull(jdbc.query(
             "SELECT ft.task_no, ft.user_id, ft.order_id, ft.status, ft.version, " +
@@ -227,8 +247,8 @@ public class FulfillmentService {
 
         // 3. 更新订单 → SHIPPED
         int orderUpdated = jdbc.update(
-            "UPDATE orders SET status = ?, version = version + 1 WHERE id = ? AND status = ?",
-            OrderStatus.SHIPPED.getCode(), orderId, OrderStatus.PENDING_FULFILLMENT.getCode()
+            "UPDATE orders SET status = ?, version = version + 1 WHERE id = ? AND user_id = ? AND status = ?",
+            OrderStatus.SHIPPED.getCode(), orderId, userId, OrderStatus.PENDING_FULFILLMENT.getCode()
         );
         if (orderUpdated == 0) {
             throw new BusinessException("ORDER_STATUS_CHANGED", "Order not in PENDING_FULFILLMENT status");
@@ -242,11 +262,11 @@ public class FulfillmentService {
 
         // 5. 更新库存 locked → shipped
         var items = jdbc.query(
-            "SELECT product_id, quantity FROM order_items WHERE order_id = ?",
+            "SELECT product_id, quantity FROM order_items WHERE order_id = ? AND user_id = ?",
             (rs, rowNum) -> new InventoryService.StockLockItem(
                 rs.getLong("product_id"), rs.getInt("quantity"), orderNo
             ),
-            orderId
+            orderId, userId
         );
         for (var item : items) {
             inventoryService.shipStock(item.productId(), item.quantity());
@@ -330,11 +350,13 @@ public class FulfillmentService {
 
     @Transactional
     public void pickTask(long taskId, long userId) {
+        rejectProxyWrite("pick fulfillment tasks");
         pickTaskCore(taskId, userId);
     }
 
     @Transactional
     public void pickTask(long taskId, long userId, String idempotencyKey) {
+        rejectProxyWrite("pick fulfillment tasks");
         String requestBody = toJson(Map.of("taskId", taskId, "userId", userId));
         String cached = idempotencyService.tryAcquire(idempotencyKey, "USER", userId, requestBody);
         if (cached != null) return;
@@ -348,6 +370,7 @@ public class FulfillmentService {
     }
 
     private void pickTaskCore(long taskId, long userId) {
+        rejectProxyWrite("pick fulfillment tasks");
         int affected = jdbc.update(
             "UPDATE fulfillment_tasks SET status = ?, version = version + 1 " +
             "WHERE id = ? AND status = ? AND assignee_id = ?",
@@ -376,6 +399,13 @@ public class FulfillmentService {
             return objectMapper.writeValueAsString(value);
         } catch (Exception e) {
             throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize fulfillment request");
+        }
+    }
+
+    private void rejectProxyWrite(String action) {
+        if (proxyMode) {
+            throw new BusinessException("PROXY_MODE_UNSUPPORTED_WRITE",
+                    "Cannot " + action + " in proxy mode because fulfillment workflows span PRIMARY outbox/inventory tables and sharded order tables without XA.");
         }
     }
 }
