@@ -1,5 +1,7 @@
 package com.minidb.proxy;
 
+import com.minidb.proxy.protocol.MySqlPacket;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 
@@ -9,6 +11,7 @@ import java.nio.charset.StandardCharsets;
  * A connection to a backend MySQL instance.
  */
 public class BackendConnection {
+    private static final byte COM_QUERY = 0x03;
 
     private final DataSourceId dataSourceId;
     private final Channel channel;
@@ -48,12 +51,12 @@ public class BackendConnection {
 
     public Channel clientChannel() { return clientChannel; }
 
-    public ChannelFuture writeAndFlush(byte[] data) {
-        return channel.writeAndFlush(channel.alloc().buffer().writeBytes(data));
-    }
-
-    public ChannelFuture writeAndFlush(String sql) {
-        return writeAndFlush(sql.getBytes(StandardCharsets.UTF_8));
+    public ChannelFuture writeComQuery(String sql) {
+        byte[] sqlBytes = sql.getBytes(StandardCharsets.UTF_8);
+        ByteBuf payload = channel.alloc().buffer(1 + sqlBytes.length);
+        payload.writeByte(COM_QUERY);
+        payload.writeBytes(sqlBytes);
+        return channel.writeAndFlush(new MySqlPacket(payload.readableBytes(), (byte) 0, payload));
     }
 
     public void close() {

@@ -1,6 +1,7 @@
 package com.minidb.order.service;
 
 import com.minidb.order.FulfillmentStatus;
+import com.minidb.order.OrderStatus;
 import com.minidb.order.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -92,6 +93,46 @@ class FulfillmentServiceTest {
             "Should reject pick when not in PICKING status");
     }
 
+    @Test
+    void shouldShipAssignedPickedTask() {
+        long taskId = seedShippableTask(FulfillmentStatus.PICKED.getCode(), userId);
+
+        fulfillmentService.shipOrder(taskId, "test_carrier", "TRACK-1", userId);
+
+        var task = fulfillmentService.getTask(taskId);
+        assertEquals(FulfillmentStatus.SHIPPED.getCode(), task.status());
+        Integer orderStatus = jdbc.queryForObject(
+            "SELECT o.status FROM orders o JOIN fulfillment_tasks ft ON ft.order_id = o.id WHERE ft.id = ?",
+            Integer.class, taskId);
+        assertEquals(OrderStatus.SHIPPED.getCode(), orderStatus);
+        Integer shipmentCount = jdbc.queryForObject("SELECT COUNT(*) FROM shipments WHERE task_id = ?",
+            Integer.class, taskId);
+        assertEquals(1, shipmentCount);
+    }
+
+    @Test
+    void shouldRejectShipWhenTaskIsNotAssignedToOperator() {
+        long taskId = seedShippableTask(FulfillmentStatus.PICKED.getCode(), userId);
+
+        assertThrows(BusinessException.class,
+            () -> fulfillmentService.shipOrder(taskId, "test_carrier", "TRACK-2", 999L));
+
+        Integer shipmentCount = jdbc.queryForObject("SELECT COUNT(*) FROM shipments WHERE task_id = ?",
+            Integer.class, taskId);
+        assertEquals(0, shipmentCount);
+    }
+
+    @Test
+    void shouldRejectShipWhenTaskStatusIsInvalid() {
+        long taskId = seedShippableTask(FulfillmentStatus.PENDING_CLAIM.getCode(), userId);
+
+        assertThrows(BusinessException.class,
+            () -> fulfillmentService.shipOrder(taskId, "test_carrier", "TRACK-3", userId));
+
+        var task = fulfillmentService.getTask(taskId);
+        assertEquals(FulfillmentStatus.PENDING_CLAIM.getCode(), task.status());
+    }
+
     private long seedTask(int status) {
         String orderNo = "ORD" + System.nanoTime();
         jdbc.update("INSERT INTO orders (order_no, user_id, status, total_amount, remark, expires_at, version) " +
@@ -103,6 +144,23 @@ class FulfillmentServiceTest {
         jdbc.update("INSERT INTO fulfillment_tasks (user_id, task_no, order_id, warehouse_id, status, assignee_id, version) " +
             "VALUES (?, ?, ?, 1, ?, ?, 0)",
             userId, taskNo, orderId, status, status == FulfillmentStatus.PICKING.getCode() ? userId : null);
+        return jdbc.queryForObject("SELECT id FROM fulfillment_tasks WHERE task_no = ?", Long.class, taskNo);
+    }
+
+    private long seedShippableTask(int taskStatus, Long assigneeId) {
+        String orderNo = "ORD" + System.nanoTime();
+        jdbc.update("INSERT INTO orders (order_no, user_id, status, total_amount, remark, expires_at, version) " +
+            "VALUES (?, ?, ?, 89.00, 'test', NOW() + INTERVAL '30' MINUTE, 0)",
+            orderNo, userId, OrderStatus.PENDING_FULFILLMENT.getCode());
+        long orderId = jdbc.queryForObject("SELECT id FROM orders WHERE order_no = ?", Long.class, orderNo);
+        jdbc.update("INSERT INTO order_items (user_id, order_id, product_id, product_sku, product_name, unit_price, quantity, line_amount) " +
+            "VALUES (?, ?, 1001, 'SKU-1001', 'test product', 89.00, 1, 89.00)", userId, orderId);
+        jdbc.update("UPDATE product_inventory SET available_qty=99, locked_qty=1, shipped_qty=0 WHERE product_id = 1001");
+
+        String taskNo = "FUL" + System.nanoTime();
+        jdbc.update("INSERT INTO fulfillment_tasks (user_id, task_no, order_id, warehouse_id, status, assignee_id, version) " +
+            "VALUES (?, ?, ?, 1, ?, ?, 0)",
+            userId, taskNo, orderId, taskStatus, assigneeId);
         return jdbc.queryForObject("SELECT id FROM fulfillment_tasks WHERE task_no = ?", Long.class, taskNo);
     }
 }

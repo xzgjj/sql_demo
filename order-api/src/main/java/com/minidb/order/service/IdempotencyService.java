@@ -2,6 +2,7 @@ package com.minidb.order.service;
 
 import com.minidb.order.IdempotencyStatus;
 import com.minidb.order.BusinessException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -16,6 +17,7 @@ import java.security.NoSuchAlgorithmException;
 @Service
 public class IdempotencyService {
     private final JdbcTemplate jdbc;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public IdempotencyService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
@@ -30,10 +32,19 @@ public class IdempotencyService {
         if (existing != null) {
             int status = (int) existing[0];
             if (status == IdempotencyStatus.COMPLETED.getCode()) {
-                if (requestHash.equals((String) existing[1])) return (String) existing[2];
+                if (requestHash.equals((String) existing[1])) return normalizeJsonColumn((String) existing[2]);
                 else throw new BusinessException("DUPLICATE_REQUEST", "Same key but different content: " + idempotencyKey);
             } else if (status == IdempotencyStatus.PROCESSING.getCode())
                 throw new BusinessException("REQUEST_IN_PROGRESS", "Concurrent request: " + idempotencyKey);
+            else if (status == IdempotencyStatus.FAILED.getCode()) {
+                if (!requestHash.equals((String) existing[1]))
+                    throw new BusinessException("DUPLICATE_REQUEST", "Same key but different content: " + idempotencyKey);
+                int updated = jdbc.update(
+                    "UPDATE idempotency_records SET status=?, response_body=NULL WHERE idempotency_key=? AND actor_type=? AND actor_id=? AND status=?",
+                    IdempotencyStatus.PROCESSING.getCode(), idempotencyKey, actorType, actorId, IdempotencyStatus.FAILED.getCode());
+                if (updated == 0) throw new BusinessException("REQUEST_IN_PROGRESS", "Concurrent retry: " + idempotencyKey);
+                return null;
+            }
         }
         try {
             jdbc.update("INSERT INTO idempotency_records (idempotency_key,actor_type,actor_id,request_hash,status) VALUES (?,?,?,?,?)",
@@ -45,9 +56,16 @@ public class IdempotencyService {
                     rs -> rs.next() ? new Object[]{rs.getInt("status"), rs.getString("request_hash"), rs.getString("response_body")} : null,
                     idempotencyKey, actorType, actorId);
                 if (re != null) {
-                    if ((int) re[0] == IdempotencyStatus.COMPLETED.getCode()) {
-                        if (requestHash.equals((String) re[1])) return (String) re[2];
+                    int status = (int) re[0];
+                    if (status == IdempotencyStatus.COMPLETED.getCode()) {
+                        if (requestHash.equals((String) re[1])) return normalizeJsonColumn((String) re[2]);
                         throw new BusinessException("DUPLICATE_REQUEST", "Same key different content");
+                    }
+                    if (status == IdempotencyStatus.FAILED.getCode() && requestHash.equals((String) re[1])) {
+                        int updated = jdbc.update(
+                            "UPDATE idempotency_records SET status=?, response_body=NULL WHERE idempotency_key=? AND actor_type=? AND actor_id=? AND status=?",
+                            IdempotencyStatus.PROCESSING.getCode(), idempotencyKey, actorType, actorId, IdempotencyStatus.FAILED.getCode());
+                        if (updated > 0) return null;
                     }
                     throw new BusinessException("REQUEST_IN_PROGRESS", "Concurrent request");
                 }
@@ -65,8 +83,8 @@ public class IdempotencyService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markFailed(String idempotencyKey, String actorType, Long actorId) {
-        jdbc.update("UPDATE idempotency_records SET status=? WHERE idempotency_key=? AND actor_type=? AND actor_id=?",
-            IdempotencyStatus.FAILED.getCode(), idempotencyKey, actorType, actorId);
+        jdbc.update("UPDATE idempotency_records SET status=? WHERE idempotency_key=? AND actor_type=? AND actor_id=? AND status=?",
+            IdempotencyStatus.FAILED.getCode(), idempotencyKey, actorType, actorId, IdempotencyStatus.PROCESSING.getCode());
     }
 
     private String sha256(String input) {
@@ -77,5 +95,18 @@ public class IdempotencyService {
             for (byte b : hash) sb.append(String.format("%02x", b));
             return sb.toString();
         } catch (NoSuchAlgorithmException e) { throw new RuntimeException("SHA-256 not available", e); }
+    }
+
+    private String normalizeJsonColumn(String value) {
+        if (value == null) return null;
+        boolean looksDoubleEncoded = value.startsWith("\"{")
+                || value.startsWith("\"[")
+                || value.startsWith("\"\\\"");
+        if (!looksDoubleEncoded) return value;
+        try {
+            return objectMapper.readValue(value, String.class);
+        } catch (Exception e) {
+            return value;
+        }
     }
 }

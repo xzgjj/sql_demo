@@ -11,11 +11,15 @@ public class MySqlPacketEncoder extends MessageToByteEncoder<MySqlPacket> {
 
     @Override
     protected void encode(ChannelHandlerContext ctx, MySqlPacket msg, ByteBuf out) {
-        int payloadLen = msg.payloadLength();
-        out.writeByte(payloadLen & 0xFF);
-        out.writeByte((payloadLen >>> 8) & 0xFF);
-        out.writeByte((payloadLen >>> 16) & 0xFF);
-        out.writeByte(msg.sequenceId());
-        out.writeBytes(msg.payload(), 0, payloadLen);
+        try {
+            int payloadLen = msg.payloadLength();
+            out.writeByte(payloadLen & 0xFF);
+            out.writeByte((payloadLen >>> 8) & 0xFF);
+            out.writeByte((payloadLen >>> 16) & 0xFF);
+            out.writeByte(msg.sequenceId());
+            out.writeBytes(msg.payload(), 0, payloadLen);
+        } finally {
+            msg.release();
+        }
     }
 }

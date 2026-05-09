@@ -33,18 +33,51 @@ public class PaymentService {
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
     private final JdbcTemplate jdbc;
     private final OrderService orderService;
+    private final IdempotencyService idempotencyService;
     private final String mockSignSecret;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
 
     public PaymentService(JdbcTemplate jdbc, OrderService orderService,
+                          IdempotencyService idempotencyService, ObjectMapper objectMapper,
                           @Value("${minidb.payment.mock-sign-secret}") String mockSignSecret) {
         this.jdbc = jdbc;
         this.orderService = orderService;
+        this.idempotencyService = idempotencyService;
+        this.objectMapper = objectMapper;
         this.mockSignSecret = mockSignSecret;
     }
 
     @Transactional
     public String createPayment(Long orderId, Long userId, String channel) {
+        return createPaymentCore(orderId, userId, channel);
+    }
+
+    @Transactional
+    public String createPayment(Long orderId, Long userId, String channel, String idempotencyKey) {
+        String requestBody = toJson(Map.of("orderId", orderId, "userId", userId, "channel", channel));
+        String cached = idempotencyService.tryAcquire(idempotencyKey, "USER", userId, requestBody);
+        if (cached != null) {
+            try {
+                return objectMapper.readValue(cached, String.class);
+            } catch (Exception e) {
+                throw new BusinessException("DESERIALIZATION_ERROR", "Failed to deserialize cached payment response");
+            }
+        }
+
+        try {
+            String paymentNo = createPaymentCore(orderId, userId, channel);
+            idempotencyService.markCompleted(idempotencyKey, "USER", userId, objectMapper.writeValueAsString(paymentNo));
+            return paymentNo;
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "USER", userId);
+            throw e;
+        } catch (Exception e) {
+            idempotencyService.markFailed(idempotencyKey, "USER", userId);
+            throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize payment response");
+        }
+    }
+
+    private String createPaymentCore(Long orderId, Long userId, String channel) {
         var order = jdbc.query(
             "SELECT order_no, status, total_amount FROM orders WHERE id = ? AND user_id = ?",
             rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found");
@@ -68,6 +101,24 @@ public class PaymentService {
 
     @Transactional
     public void handleCallback(PaymentCallbackRequest req) {
+        handleCallbackCore(req);
+    }
+
+    @Transactional
+    public void handleCallback(PaymentCallbackRequest req, String idempotencyKey) {
+        String requestBody = toJson(req);
+        String cached = idempotencyService.tryAcquire(idempotencyKey, "PAYMENT", 0L, requestBody);
+        if (cached != null) return;
+        try {
+            handleCallbackCore(req);
+            idempotencyService.markCompleted(idempotencyKey, "PAYMENT", 0L, "{}");
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "PAYMENT", 0L);
+            throw e;
+        }
+    }
+
+    private void handleCallbackCore(PaymentCallbackRequest req) {
         log.info("Payment callback: paymentNo={}, amount={}", req.paymentNo(), req.amount());
         if (!verifySignature(req)) throw new BusinessException("PAYMENT_SIGNATURE_INVALID", "Invalid payment signature");
 
@@ -82,6 +133,12 @@ public class PaymentService {
         long userId = (long) paymentInfo[2];
         BigDecimal expected = (BigDecimal) paymentInfo[3]; int pStatus = (int) paymentInfo[4];
 
+        if (pStatus == PaymentStatus.SUCCESS.getCode()) return;
+        if (pStatus != PaymentStatus.PENDING.getCode()) {
+            log.info("Payment callback already handled: paymentNo={}, status={}", req.paymentNo(), pStatus);
+            return;
+        }
+
         // Then find order on same shard (both sharded by user_id)
         var orderInfo = jdbc.query(
             "SELECT order_no, status FROM orders WHERE id = ? AND user_id = ?",
@@ -89,8 +146,6 @@ public class PaymentService {
                 return new Object[]{rs.getString("order_no"), rs.getInt("status")}; },
             orderId, userId);
         String orderNo = (String) orderInfo[0];
-
-        if (pStatus == PaymentStatus.SUCCESS.getCode()) return;
 
         if (req.amount().compareTo(expected) != 0) {
             jdbc.update("UPDATE payments SET status=?, raw_callback=? WHERE id=? AND status=?",
@@ -152,7 +207,7 @@ public class PaymentService {
 
     private void writeException(String bizType, String bizNo, String reasonCode, String detail) {
         jdbc.update("INSERT INTO exception_tickets (biz_type,biz_no,reason_code,detail,status) VALUES (?,?,?,?,10)",
-            bizType, bizNo, reasonCode, detail);
+            bizType, bizNo, reasonCode, toJson(Map.of("detail", detail)));
     }
 
     private String toJson(Object obj) {

@@ -42,7 +42,7 @@ public class ExceptionController {
             @PathVariable("id") long id,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestBody Map<String, String> body) {
-        exceptionService.resolveException(id, body.getOrDefault("resolution", "Manual resolution"));
+        exceptionService.resolveException(id, body.getOrDefault("resolution", "Manual resolution"), idempotencyKey);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 }

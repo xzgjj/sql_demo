@@ -10,6 +10,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_MODULES = ["mini-mvcc", "mini-proxy", "order-api"]
+BUILD_OUTPUT_PATHS = [
+    "target",
+    "mini-mvcc/target",
+    "mini-proxy/target",
+    "order-api/target",
+    "web-console/dist",
+    "tools/__pycache__",
+]
+DEFAULT_MAX_LOG_SIZE_MB = 20
+DEFAULT_MAX_LOG_FILES_PER_PREFIX = 10
 EXPECTED_IGNORED = [
     "CLAUDE.md",
     "notes.txt",
@@ -23,6 +33,24 @@ EXPECTED_IGNORED = [
     "web-console/node_modules/",
     "web-console/dist/",
 ]
+
+
+def path_inside_root(path):
+    root = ROOT.resolve()
+    target = path.resolve()
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def format_bytes(size):
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.2f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.2f} KB"
+    return f"{size} B"
 
 
 def run_command(command, timeout=120):
@@ -55,6 +83,133 @@ def tool_version(name, args):
 def check_file(path):
     target = ROOT / path
     return target.exists()
+
+
+def clean_build_outputs(apply):
+    results = []
+    for rel in BUILD_OUTPUT_PATHS:
+        target = ROOT / rel
+        entry = {"path": rel, "exists": target.exists(), "action": "skip", "ok": True}
+        if not target.exists():
+            results.append(entry)
+            continue
+        if not path_inside_root(target):
+            entry.update({"action": "refuse", "ok": False, "reason": "outside project root"})
+            results.append(entry)
+            continue
+        if target.is_symlink():
+            entry.update({"action": "refuse", "ok": False, "reason": "symlink target is not cleaned"})
+            results.append(entry)
+            continue
+        if not apply:
+            entry["action"] = "would-remove"
+            results.append(entry)
+            continue
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        entry["action"] = "removed"
+        results.append(entry)
+    return results
+
+
+def log_prefix(path):
+    name = path.name
+    for suffix in (".out.log", ".err.log", ".log"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    parts = name.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0]
+    return name
+
+
+def collect_log_files():
+    files = []
+    for directory in (ROOT, ROOT / "logs"):
+        if directory.exists():
+            files.extend(path for path in directory.glob("*.log") if path.is_file())
+    return sorted(set(files), key=lambda p: str(p.relative_to(ROOT)).lower())
+
+
+def analyze_logs(max_size_mb, max_files_per_prefix):
+    max_bytes = max_size_mb * 1024 * 1024
+    files = collect_log_files()
+    oversized = [
+        {
+            "path": str(path.relative_to(ROOT)),
+            "size": path.stat().st_size,
+            "sizeText": format_bytes(path.stat().st_size),
+        }
+        for path in files
+        if path.stat().st_size > max_bytes
+    ]
+
+    groups = {}
+    for path in files:
+        directory = str(path.parent.relative_to(ROOT)) if path.parent != ROOT else "."
+        key = (directory, log_prefix(path))
+        groups.setdefault(key, []).append(path)
+
+    overflow = []
+    for (directory, prefix), paths in groups.items():
+        ordered = sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in ordered[max_files_per_prefix:]:
+            overflow.append({
+                "directory": directory,
+                "prefix": prefix,
+                "path": str(path.relative_to(ROOT)),
+                "size": path.stat().st_size,
+                "sizeText": format_bytes(path.stat().st_size),
+            })
+
+    return {
+        "maxSizeMb": max_size_mb,
+        "maxFilesPerPrefix": max_files_per_prefix,
+        "totalFiles": len(files),
+        "oversized": oversized,
+        "overflow": overflow,
+    }
+
+
+def archive_overflow_logs(overflow):
+    archive_dir = ROOT / "logs" / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for item in overflow:
+        source = ROOT / item["path"]
+        if not source.exists():
+            continue
+        if not path_inside_root(source) or source.is_symlink():
+            moved.append({"path": item["path"], "ok": False, "reason": "refused unsafe path"})
+            continue
+        destination = archive_dir / source.name
+        if destination.exists():
+            destination = archive_dir / f"{source.stem}-{int(source.stat().st_mtime)}{source.suffix}"
+        shutil.move(str(source), str(destination))
+        moved.append({
+            "path": item["path"],
+            "ok": True,
+            "destination": str(destination.relative_to(ROOT)),
+        })
+    return moved
+
+
+def check_log_policy(max_size_mb=DEFAULT_MAX_LOG_SIZE_MB,
+                     max_files_per_prefix=DEFAULT_MAX_LOG_FILES_PER_PREFIX):
+    report = analyze_logs(max_size_mb, max_files_per_prefix)
+    violations = len(report["oversized"]) + len(report["overflow"])
+    if violations:
+        return False, (
+            f"log policy violations: oversized={len(report['oversized'])}, "
+            f"overflow={len(report['overflow'])}"
+        )
+    return True, (
+        f"log policy ok ({report['totalFiles']} files, "
+        f"max {max_size_mb} MB, max {max_files_per_prefix}/prefix)"
+    )
 
 
 def check_parent_pom():
@@ -297,8 +452,45 @@ def run_maven_verify(strict):
     return True, "mvn -B verify passed"
 
 
+def print_clean_report(results, apply):
+    action = "apply" if apply else "dry-run"
+    print(f"MiniDB-Lab clean build outputs ({action})")
+    for item in results:
+        status = "PASS" if item["ok"] else "FAIL"
+        detail = item["action"]
+        if item.get("reason"):
+            detail += f" ({item['reason']})"
+        print(f"  [{status}] {item['path']}: {detail}")
+
+
+def print_log_report(report, moved=None, apply=False):
+    mode = "apply" if apply else "check"
+    print(f"MiniDB-Lab log policy ({mode})")
+    print(f"  max size: {report['maxSizeMb']} MB")
+    print(f"  max files per prefix: {report['maxFilesPerPrefix']}")
+    print(f"  scanned files: {report['totalFiles']}")
+    if not report["oversized"] and not report["overflow"]:
+        print("  [PASS] logs within policy")
+    for item in report["oversized"]:
+        print(f"  [FAIL] oversize {item['path']}: {item['sizeText']}")
+    for item in report["overflow"]:
+        print(f"  [FAIL] overflow {item['path']}: prefix={item['prefix']}")
+    if moved is not None:
+        for item in moved:
+            status = "PASS" if item["ok"] else "FAIL"
+            detail = item.get("destination") or item.get("reason", "")
+            print(f"  [{status}] archive {item['path']}: {detail}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="MiniDB-Lab local verification")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("verify", "clean", "log-check"),
+        default="verify",
+        help="command to run: verify (default), clean, or log-check",
+    )
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -309,7 +501,50 @@ def main():
         action="store_true",
         help="print machine-readable JSON report",
     )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="apply clean/log archive actions; default is dry-run/check only",
+    )
+    parser.add_argument(
+        "--max-log-size-mb",
+        type=int,
+        default=DEFAULT_MAX_LOG_SIZE_MB,
+        help=f"maximum allowed log file size in MB (default: {DEFAULT_MAX_LOG_SIZE_MB})",
+    )
+    parser.add_argument(
+        "--max-log-files",
+        type=int,
+        default=DEFAULT_MAX_LOG_FILES_PER_PREFIX,
+        help=f"maximum log files per prefix (default: {DEFAULT_MAX_LOG_FILES_PER_PREFIX})",
+    )
     args = parser.parse_args()
+    if args.max_log_size_mb < 1 or args.max_log_files < 1:
+        parser.error("--max-log-size-mb and --max-log-files must be positive integers")
+
+    if args.command == "clean":
+        results = clean_build_outputs(args.apply)
+        report = {"root": str(ROOT), "apply": args.apply, "results": results}
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print_clean_report(results, args.apply)
+        return 1 if any(not item["ok"] for item in results) else 0
+
+    if args.command == "log-check":
+        report = analyze_logs(args.max_log_size_mb, args.max_log_files)
+        moved = archive_overflow_logs(report["overflow"]) if args.apply else None
+        full_report = {"root": str(ROOT), "apply": args.apply, "logPolicy": report, "moved": moved}
+        if args.json:
+            print(json.dumps(full_report, ensure_ascii=False, indent=2))
+        else:
+            print_log_report(report, moved, args.apply)
+        remaining_violations = len(report["oversized"])
+        if not args.apply:
+            remaining_violations += len(report["overflow"])
+        failed_moves = [item for item in (moved or []) if not item["ok"]]
+        remaining_violations += len(failed_moves)
+        return 1 if remaining_violations else 0
 
     checks = []
     tools = [
@@ -353,6 +588,9 @@ def main():
 
     ok, detail = check_web_console_sources()
     checks.append({"name": "web-console:source-files", "ok": ok, "detail": detail})
+
+    ok, detail = check_log_policy()
+    checks.append({"name": "logs:policy", "ok": ok, "detail": detail})
 
     for script in ("lint", "test"):
         ok, detail = run_web_console_command(script)

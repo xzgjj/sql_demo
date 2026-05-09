@@ -24,7 +24,7 @@ public class ConsoleController {
     @PostMapping("/console/demo/load")
     public ResponseEntity<ApiResponse<ConsoleService.DemoLoadResult>> loadDemo(
             @RequestHeader("Idempotency-Key") String idempotencyKey) {
-        return ResponseEntity.ok(ApiResponse.ok(consoleService.loadDemoData()));
+        return ResponseEntity.ok(ApiResponse.ok(consoleService.loadDemoData(idempotencyKey)));
     }
 
     @GetMapping("/audit/orders/{orderId}/trace")

@@ -155,12 +155,35 @@ npm --version
 
 ```bash
 python tools/verify_local.py
+python tools/verify_local.py verify
+
+后端：
+
+order-api：http://127.0.0.1:8080
+订单履约终端：http://127.0.0.1:5173/business/dashboard
 ```
 
 严格模式用于 CI 或完整环境：
 
 ```bash
 python tools/verify_local.py --strict
+```
+
+统一工程维护命令：
+
+```bash
+# 预演清理 Maven target/ 和前端 dist/，不实际删除
+python tools/verify_local.py clean
+
+# 执行清理，仅限白名单构建产物目录
+python tools/verify_local.py clean --apply
+
+# 检查日志大小和同名前缀日志数量，默认限制 20 MB、10 个文件
+python tools/verify_local.py log-check
+
+# 自定义日志约束；超出数量的旧日志加 --apply 后归档到 logs/archive/
+python tools/verify_local.py log-check --max-log-size-mb 20 --max-log-files 10
+python tools/verify_local.py log-check --apply
 ```
 
 后端构建与测试：
@@ -301,6 +324,30 @@ sql_demo/
 - 重复下单必须返回第一次处理结果。
 - 缺少分片键的高风险查询必须拒绝。
 - 数据库结构变更必须通过 Flyway 迁移脚本执行。
+
+## 当前加固验收标准
+
+本轮项目审查后的统一加固目标：
+
+- MySQL 协议代理必须按官方协议发送后端 `COM_QUERY`：包头为 `3-byte payload_length + 1-byte sequence_id`，命令阶段序号从 `0` 开始，payload 首字节为 `0x03`，后接 SQL 文本。
+- `mini-proxy` 对访问分片表但缺少 `user_id`、`order_no` 或 `payment_no` 的读写 SQL 必须返回 `MISSING_SHARD_KEY`，只允许无表查询和 PRIMARY-only 控制表走默认路由。
+- 所有真实写接口必须消费 `Idempotency-Key`，业务失败要把幂等记录从 `PROCESSING` 标记为 `FAILED`，相同请求允许重试，不同请求必须拒绝。
+- 履约发货必须检查任务状态、认领人、订单原状态和库存影响行数，任一条件不满足不得继续写订单、发货单或 outbox。
+- `exception_tickets.detail`、`outbox_events.payload`、`idempotency_records.response_body` 必须写入合法 JSON 文本。
+- Outbox 处理必须先用条件更新领取事件，再分发，避免多处理器重复处理同一条 `NEW` 事件。
+
+对标依据：
+
+- MySQL 官方 Internals：Basic Packets、Command Phase、`COM_QUERY`。
+- ShardingSphere / Vitess / ProxySQL 的共同约束：代理层要把 SQL 语义解析、路由元数据和事务边界作为核心风险点处理；本项目只实现教学平台最小子集，不实现跨分片事务和跨分片 Join。
+
+本轮验收命令：
+
+```bash
+mvn -pl mini-proxy test
+mvn -pl order-api test
+python tools/verify_local.py --json
+```
 
 ## 部署说明
 

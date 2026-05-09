@@ -1,6 +1,7 @@
 package com.minidb.order.service;
 
 import com.minidb.order.BusinessException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -9,14 +10,20 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Map;
 
 @Service
 public class ExceptionService {
     private static final Logger log = LoggerFactory.getLogger(ExceptionService.class);
     private final JdbcTemplate jdbc;
+    private final IdempotencyService idempotencyService;
+    private final ObjectMapper objectMapper;
 
-    public ExceptionService(JdbcTemplate jdbc) {
+    public ExceptionService(JdbcTemplate jdbc, IdempotencyService idempotencyService,
+                            ObjectMapper objectMapper) {
         this.jdbc = jdbc;
+        this.idempotencyService = idempotencyService;
+        this.objectMapper = objectMapper;
     }
 
     public record ExceptionItem(long id, String bizType, String bizNo, String reasonCode,
@@ -74,6 +81,24 @@ public class ExceptionService {
 
     @Transactional
     public void resolveException(long id, String resolution) {
+        resolveExceptionCore(id, resolution);
+    }
+
+    @Transactional
+    public void resolveException(long id, String resolution, String idempotencyKey) {
+        String requestBody = toJson(Map.of("id", id, "resolution", resolution));
+        String cached = idempotencyService.tryAcquire(idempotencyKey, "SYSTEM", 0L, requestBody);
+        if (cached != null) return;
+        try {
+            resolveExceptionCore(id, resolution);
+            idempotencyService.markCompleted(idempotencyKey, "SYSTEM", 0L, "{}");
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "SYSTEM", 0L);
+            throw e;
+        }
+    }
+
+    private void resolveExceptionCore(long id, String resolution) {
         var existing = jdbc.query(
             "SELECT status, detail FROM exception_tickets WHERE id = ?",
             rs -> rs.next() ? new Object[]{rs.getInt("status"), rs.getString("detail")} : null,
@@ -85,9 +110,23 @@ public class ExceptionService {
                 "Exception already resolved or in progress, status: " + existing[0]);
 
         String oldDetail = (String) existing[1];
-        String newDetail = (oldDetail != null ? oldDetail : "") + "\n[RESOLVED] " + resolution;
-        jdbc.update("UPDATE exception_tickets SET status = 30, detail = ? WHERE id = ? AND status = 10",
+        String newDetail = toJson(Map.of(
+            "detail", oldDetail != null ? oldDetail : "",
+            "resolution", resolution
+        ));
+        int updated = jdbc.update("UPDATE exception_tickets SET status = 30, detail = ? WHERE id = ? AND status = 10",
             newDetail, id);
+        if (updated == 0) {
+            throw new BusinessException("EXCEPTION_STATUS_CHANGED", "Exception already changed: " + id);
+        }
         log.info("Exception ticket {} resolved: {}", id, resolution);
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize exception detail");
+        }
     }
 }

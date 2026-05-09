@@ -92,7 +92,8 @@ class ExceptionServiceTest {
 
     private long seedException(String bizType, String bizNo, String reasonCode, String detail) {
         jdbc.update("INSERT INTO exception_tickets (biz_type, biz_no, reason_code, detail, status) " +
-            "VALUES (?, ?, ?, ?, 10)", bizType, bizNo, reasonCode, detail);
+            "VALUES (?, ?, ?, ?, 10)", bizType, bizNo, reasonCode,
+            "{\"detail\":\"" + detail.replace("\"", "\\\"") + "\"}");
         return jdbc.queryForObject("SELECT id FROM exception_tickets WHERE biz_no = ?", Long.class, bizNo);
     }
 }

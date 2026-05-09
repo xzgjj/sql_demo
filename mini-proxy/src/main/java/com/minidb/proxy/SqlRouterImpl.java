@@ -126,6 +126,12 @@ public class SqlRouterImpl {
     }
 
     private RoutePlan routeOutsideTransaction(ProxySession session, ParsedSql sql, Long shardKey) {
+        if (requiresShardKey(sql, shardKey)) {
+            throw new CrossShardException(MISSING_SHARD_KEY,
+                    "MISSING_SHARD_KEY: shard key (user_id) required for sharded table access. "
+                    + "Provide user_id or one of order_no/payment_no for route lookup.");
+        }
+
         if (sql.isWrite()) {
             return RoutePlan.toDataSource(primaryForSql(sql, shardKey), resolveShardIdFromKey(shardKey));
         }
@@ -147,6 +153,13 @@ public class SqlRouterImpl {
 
         // SET, SHOW, etc. — default to primary
         return RoutePlan.toDataSource(DataSourceId.PRIMARY, null);
+    }
+
+    private boolean requiresShardKey(ParsedSql sql, Long shardKey) {
+        return (sql.isWrite() || sql.isRead())
+                && !sql.tables().isEmpty()
+                && !sql.isPrimaryOnly()
+                && shardKey == null;
     }
 
     private DataSourceId resolveWriteDataSource(ParsedSql sql, Long shardKey) {

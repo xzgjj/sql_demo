@@ -73,6 +73,7 @@ class MySqlPacketCodecTest {
         MySqlPacket packet = new MySqlPacket(bytes.length, (byte) 3, payloadBuf);
 
         assertTrue(channel.writeOutbound(packet));
+        assertEquals(0, payloadBuf.refCnt());
         ByteBuf encoded = channel.readOutbound();
         assertNotNull(encoded);
 

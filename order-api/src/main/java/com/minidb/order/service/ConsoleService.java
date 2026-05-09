@@ -9,6 +9,7 @@ import com.minidb.order.BusinessException;
 import com.minidb.order.OrderStatus;
 import com.minidb.order.dto.CreateOrderRequest;
 import com.minidb.order.dto.PaymentCallbackRequest;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -30,12 +31,15 @@ public class ConsoleService {
     private final PaymentService paymentService;
     private final OutboxProcessor outboxProcessor;
     private final FulfillmentService fulfillmentService;
+    private final IdempotencyService idempotencyService;
+    private final ObjectMapper objectMapper;
     private final String mockSignSecret;
     private final int shardCount;
     private final boolean demoEnabled;
 
     public ConsoleService(JdbcTemplate jdbc, OrderService orderService, PaymentService paymentService,
                           OutboxProcessor outboxProcessor, FulfillmentService fulfillmentService,
+                          IdempotencyService idempotencyService, ObjectMapper objectMapper,
                           @Value("${minidb.payment.mock-sign-secret}") String mockSignSecret,
                           @Value("${minidb.order.shard-count:4}") int shardCount,
                           @Value("${minidb.console.demo-enabled:false}") boolean demoEnabled) {
@@ -44,6 +48,8 @@ public class ConsoleService {
         this.paymentService = paymentService;
         this.outboxProcessor = outboxProcessor;
         this.fulfillmentService = fulfillmentService;
+        this.idempotencyService = idempotencyService;
+        this.objectMapper = objectMapper;
         this.mockSignSecret = mockSignSecret;
         this.shardCount = shardCount;
         this.demoEnabled = demoEnabled;
@@ -107,6 +113,26 @@ public class ConsoleService {
         return new DemoLoadResult(demoOrderNos(),
                 count("SELECT COUNT(*) FROM fulfillment_tasks"),
                 count("SELECT COUNT(*) FROM exception_tickets"));
+    }
+
+    public DemoLoadResult loadDemoData(String idempotencyKey) {
+        String requestBody = toJson(Map.of("action", "console-demo-load"));
+        String cached = idempotencyService.tryAcquire(idempotencyKey, "SYSTEM", 0L, requestBody);
+        if (cached != null) {
+            try {
+                return objectMapper.readValue(cached, DemoLoadResult.class);
+            } catch (Exception e) {
+                throw new BusinessException("DESERIALIZATION_ERROR", "Failed to deserialize demo load response");
+            }
+        }
+        try {
+            DemoLoadResult result = loadDemoData();
+            idempotencyService.markCompleted(idempotencyKey, "SYSTEM", 0L, toJson(result));
+            return result;
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "SYSTEM", 0L);
+            throw e;
+        }
     }
 
     public OrderTrace traceOrder(long orderId) {
@@ -269,17 +295,20 @@ public class ConsoleService {
 
     private void shipIfTaskExists(CreatedOrder order, long operatorId) {
         var task = jdbc.query(
-                "SELECT id, version, status FROM fulfillment_tasks WHERE order_id = ?",
+                "SELECT id, version, status, assignee_id FROM fulfillment_tasks WHERE order_id = ?",
                 rs -> {
                     if (!rs.next()) return null;
-                    return new long[]{rs.getLong("id"), rs.getInt("version"), rs.getInt("status")};
+                    return new long[]{rs.getLong("id"), rs.getInt("version"), rs.getInt("status"),
+                            rs.getObject("assignee_id") != null ? rs.getLong("assignee_id") : 0L};
                 },
                 order.orderId());
         if (task == null) return;
+        long shipOperatorId = task[3] != 0L ? task[3] : operatorId;
         if (task[2] == 10) {
             fulfillmentService.claimTask(task[0], operatorId, (int) task[1]);
+            shipOperatorId = operatorId;
         }
-        fulfillmentService.shipOrder(task[0], "demo_express", "DEMO" + order.orderNo(), operatorId);
+        fulfillmentService.shipOrder(task[0], "demo_express", "DEMO" + order.orderNo(), shipOperatorId);
     }
 
     private List<String> demoOrderNos() {
@@ -293,7 +322,7 @@ public class ConsoleService {
                 Integer.class);
         if (count != null && count > 0) return;
         jdbc.update("INSERT INTO exception_tickets (biz_type,biz_no,reason_code,detail,status) VALUES (?,?,?,?,10)",
-                "ROUTING", "ORD-ROUTE-MISSING", "ROUTE_NOT_FOUND", "order_route missing");
+                "ROUTING", "ORD-ROUTE-MISSING", "ROUTE_NOT_FOUND", "{\"detail\":\"order_route missing\"}");
     }
 
     private String sign(String paymentNo, BigDecimal amount, String status, LocalDateTime paidAt) {
@@ -310,6 +339,14 @@ public class ConsoleService {
     private long count(String sql) {
         Long value = jdbc.queryForObject(sql, Long.class);
         return value == null ? 0 : value;
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize console response");
+        }
     }
 
     private Long findLongAfter(String lowerSql, String key) {

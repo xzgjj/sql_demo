@@ -32,7 +32,7 @@ class IdempotencyServiceTest {
         // 第一次请求应获取锁
         String result = idempotencyService.tryAcquire("key-1", "USER", 1L, "request-body");
         assertNull(result, "First request should get lock");
-        idempotencyService.markCompleted("key-1", "USER", 1L, "response");
+        idempotencyService.markCompleted("key-1", "USER", 1L, "\"response\"");
 
         // 第二次相同请求应返回第一次响应
         String cached = idempotencyService.tryAcquire("key-1", "USER", 1L, "request-body");
@@ -43,9 +43,31 @@ class IdempotencyServiceTest {
     @Test
     void shouldRejectDifferentRequestWithSameKey() {
         idempotencyService.tryAcquire("key-2", "USER", 1L, "body-a");
-        idempotencyService.markCompleted("key-2", "USER", 1L, "response-a");
+        idempotencyService.markCompleted("key-2", "USER", 1L, "\"response-a\"");
 
         assertThrows(BusinessException.class, () ->
             idempotencyService.tryAcquire("key-2", "USER", 1L, "body-b"));
+    }
+
+    @Test
+    void shouldAllowRetryAfterFailedWithSameRequest() {
+        assertNull(idempotencyService.tryAcquire("key-3", "USER", 1L, "body-a"));
+        idempotencyService.markFailed("key-3", "USER", 1L);
+
+        assertNull(idempotencyService.tryAcquire("key-3", "USER", 1L, "body-a"));
+
+        Integer status = jdbc.queryForObject(
+            "SELECT status FROM idempotency_records WHERE idempotency_key = 'key-3'",
+            Integer.class);
+        assertEquals(10, status);
+    }
+
+    @Test
+    void shouldRejectRetryAfterFailedWithDifferentRequest() {
+        assertNull(idempotencyService.tryAcquire("key-4", "USER", 1L, "body-a"));
+        idempotencyService.markFailed("key-4", "USER", 1L);
+
+        assertThrows(BusinessException.class, () ->
+            idempotencyService.tryAcquire("key-4", "USER", 1L, "body-b"));
     }
 }

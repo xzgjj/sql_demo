@@ -56,62 +56,67 @@ public class OrderService {
             catch (Exception e) { throw new BusinessException("DESERIALIZATION_ERROR", "Failed to deserialize cached response"); }
         }
 
-        List<Long> productIds = req.items().stream().map(i -> i.productId()).toList();
-        var products = jdbc.query(
-            "SELECT id, sku, name, price, status FROM products WHERE id IN (" +
-            productIds.stream().map(id -> "?").reduce((a, b) -> a + "," + b).orElse("") + ")",
-            (rs, rowNum) -> new ProductSnapshot(rs.getLong("id"), rs.getString("sku"),
-                rs.getString("name"), rs.getBigDecimal("price"), rs.getInt("status")),
-            productIds.toArray()
-        );
-        if (products.size() != productIds.size()) throw new BusinessException("PRODUCT_NOT_FOUND", "Some products not found");
-        for (var p : products) if (p.status != 1) throw new BusinessException("PRODUCT_OFFLINE", "Product offline: " + p.sku);
+        try {
+            List<Long> productIds = req.items().stream().map(i -> i.productId()).toList();
+            var products = jdbc.query(
+                "SELECT id, sku, name, price, status FROM products WHERE id IN (" +
+                productIds.stream().map(id -> "?").reduce((a, b) -> a + "," + b).orElse("") + ")",
+                (rs, rowNum) -> new ProductSnapshot(rs.getLong("id"), rs.getString("sku"),
+                    rs.getString("name"), rs.getBigDecimal("price"), rs.getInt("status")),
+                productIds.toArray()
+            );
+            if (products.size() != productIds.size()) throw new BusinessException("PRODUCT_NOT_FOUND", "Some products not found");
+            for (var p : products) if (p.status != 1) throw new BusinessException("PRODUCT_OFFLINE", "Product offline: " + p.sku);
 
-        String orderNo = generateOrderNo();
-        List<InventoryService.StockLockItem> lockItems = new ArrayList<>();
-        for (var item : req.items()) lockItems.add(new InventoryService.StockLockItem(item.productId(), item.quantity(), orderNo));
-        inventoryService.lockBatch(lockItems);
+            String orderNo = generateOrderNo();
+            List<InventoryService.StockLockItem> lockItems = new ArrayList<>();
+            for (var item : req.items()) lockItems.add(new InventoryService.StockLockItem(item.productId(), item.quantity(), orderNo));
+            inventoryService.lockBatch(lockItems);
 
-        BigDecimal totalAmount = BigDecimal.ZERO;
-        for (int i = 0; i < req.items().size(); i++) {
-            final int idx = i;
-            var prod = products.stream().filter(p -> p.id == req.items().get(idx).productId()).findFirst().orElseThrow();
-            totalAmount = totalAmount.add(prod.price.multiply(BigDecimal.valueOf(req.items().get(idx).quantity())));
+            BigDecimal totalAmount = BigDecimal.ZERO;
+            for (int i = 0; i < req.items().size(); i++) {
+                final int idx = i;
+                var prod = products.stream().filter(p -> p.id == req.items().get(idx).productId()).findFirst().orElseThrow();
+                totalAmount = totalAmount.add(prod.price.multiply(BigDecimal.valueOf(req.items().get(idx).quantity())));
+            }
+            final BigDecimal finalAmount = totalAmount;
+            LocalDateTime now = LocalDateTime.now();
+
+            KeyHolder keyHolder = new GeneratedKeyHolder();
+            jdbc.update(conn -> {
+                PreparedStatement ps = conn.prepareStatement(
+                    "INSERT INTO orders (order_no, user_id, status, total_amount, remark, expires_at, version) VALUES (?,?,?,?,?,?,0)",
+                    new String[]{"id"});
+                ps.setString(1, orderNo); ps.setLong(2, req.userId());
+                ps.setInt(3, OrderStatus.PENDING_PAYMENT.getCode()); ps.setBigDecimal(4, finalAmount);
+                ps.setString(5, req.remark()); ps.setObject(6, now.plusMinutes(paymentTimeoutMinutes));
+                return ps;
+            }, keyHolder);
+            long orderId = keyHolder.getKeyAs(Long.class);
+
+            for (int i = 0; i < req.items().size(); i++) {
+                var item = req.items().get(i);
+                var prod = products.stream().filter(p -> p.id == item.productId()).findFirst().orElseThrow();
+                jdbc.update("INSERT INTO order_items (user_id,order_id,product_id,product_sku,product_name,unit_price,quantity,line_amount) VALUES (?,?,?,?,?,?,?,?)",
+                    req.userId(), orderId, prod.id, prod.sku, prod.name, prod.price, item.quantity(),
+                    prod.price.multiply(BigDecimal.valueOf(item.quantity())));
+            }
+
+            writeStatusLog(orderId, orderNo, null, OrderStatus.PENDING_PAYMENT, "SYSTEM", "Order created");
+            writeOutbox("ORDER_CREATED", "ORDER", orderId, buildPayload(orderNo, null));
+            writeOrderRoute(orderNo, req.userId());
+
+            CreateOrderResponse response = new CreateOrderResponse(orderId, orderNo, OrderStatus.PENDING_PAYMENT.getCode(), finalAmount, now.plusMinutes(paymentTimeoutMinutes));
+            String respJson;
+            try { respJson = objectMapper.writeValueAsString(response); }
+            catch (Exception e) { throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize response"); }
+            idempotencyService.markCompleted(idempotencyKey, "USER", req.userId(), respJson);
+            log.info("Order created: orderNo={}, amount={}", orderNo, finalAmount);
+            return response;
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "USER", req.userId());
+            throw e;
         }
-        final BigDecimal finalAmount = totalAmount;
-        LocalDateTime now = LocalDateTime.now();
-
-        KeyHolder keyHolder = new GeneratedKeyHolder();
-        jdbc.update(conn -> {
-            PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO orders (order_no, user_id, status, total_amount, remark, expires_at, version) VALUES (?,?,?,?,?,?,0)",
-                new String[]{"id"});
-            ps.setString(1, orderNo); ps.setLong(2, req.userId());
-            ps.setInt(3, OrderStatus.PENDING_PAYMENT.getCode()); ps.setBigDecimal(4, finalAmount);
-            ps.setString(5, req.remark()); ps.setObject(6, now.plusMinutes(paymentTimeoutMinutes));
-            return ps;
-        }, keyHolder);
-        long orderId = keyHolder.getKeyAs(Long.class);
-
-        for (int i = 0; i < req.items().size(); i++) {
-            var item = req.items().get(i);
-            var prod = products.stream().filter(p -> p.id == item.productId()).findFirst().orElseThrow();
-            jdbc.update("INSERT INTO order_items (user_id,order_id,product_id,product_sku,product_name,unit_price,quantity,line_amount) VALUES (?,?,?,?,?,?,?,?)",
-                req.userId(), orderId, prod.id, prod.sku, prod.name, prod.price, item.quantity(),
-                prod.price.multiply(BigDecimal.valueOf(item.quantity())));
-        }
-
-        writeStatusLog(orderId, orderNo, null, OrderStatus.PENDING_PAYMENT, "SYSTEM", "Order created");
-        writeOutbox("ORDER_CREATED", "ORDER", orderId, buildPayload(orderNo, null));
-        writeOrderRoute(orderNo, req.userId());
-
-        CreateOrderResponse response = new CreateOrderResponse(orderId, orderNo, OrderStatus.PENDING_PAYMENT.getCode(), finalAmount, now.plusMinutes(paymentTimeoutMinutes));
-        String respJson;
-        try { respJson = objectMapper.writeValueAsString(response); }
-        catch (Exception e) { throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize response"); }
-        idempotencyService.markCompleted(idempotencyKey, "USER", req.userId(), respJson);
-        log.info("Order created: orderNo={}, amount={}", orderNo, finalAmount);
-        return response;
     }
 
     @Transactional
@@ -122,38 +127,43 @@ public class OrderService {
         String cached = idempotencyService.tryAcquire(idempotencyKey, "USER", operatorId, reqJson);
         if (cached != null) return;
 
-        var order = jdbc.query("SELECT order_no, user_id, status, version FROM orders WHERE id = ?",
-            rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
-                return new Object[]{rs.getString("order_no"), rs.getLong("user_id"), rs.getInt("status"), rs.getInt("version")}; },
-            orderId);
-        String orderNo = (String) order[0];
-        int currentStatus = (int) order[2];
+        try {
+            var order = jdbc.query("SELECT order_no, user_id, status, version FROM orders WHERE id = ?",
+                rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
+                    return new Object[]{rs.getString("order_no"), rs.getLong("user_id"), rs.getInt("status"), rs.getInt("version")}; },
+                orderId);
+            String orderNo = (String) order[0];
+            int currentStatus = (int) order[2];
 
-        if (currentStatus == OrderStatus.PENDING_PAYMENT.getCode()) {
-            var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ?",
-                (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo), orderId);
-            inventoryService.releaseBatch(items);
-            int affected = jdbc.update("UPDATE orders SET status=?, cancelled_at=NOW(), version=version+1 WHERE id=? AND status=?",
-                OrderStatus.CANCELLED.getCode(), orderId, OrderStatus.PENDING_PAYMENT.getCode());
-            if (affected == 0) throw new BusinessException("ORDER_STATUS_CHANGED", "Order status already changed");
-            writeStatusLog(orderId, orderNo, OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED, "USER", reason);
-            writeOutbox("ORDER_CANCELLED", "ORDER", orderId, buildPayload(orderNo, reason));
-        } else if (currentStatus == OrderStatus.PAID.getCode()) {
-            var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ?",
-                (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo), orderId);
-            inventoryService.releaseBatch(items);
-            int affected = jdbc.update("UPDATE orders SET status=?, version=version+1 WHERE id=? AND status=?",
-                OrderStatus.REFUNDING.getCode(), orderId, OrderStatus.PAID.getCode());
-            if (affected == 0) throw new BusinessException("ORDER_STATUS_CHANGED", "Order status already changed");
-            writeStatusLog(orderId, orderNo, OrderStatus.PAID, OrderStatus.REFUNDING, "USER", reason);
-            writeOutbox("ORDER_CANCEL_REFUND", "ORDER", orderId, buildPayload(orderNo, reason));
-        } else if (currentStatus == OrderStatus.SHIPPED.getCode()) {
-            throw new BusinessException("ORDER_STATUS_CHANGED", "Cannot cancel shipped order");
-        } else {
-            throw new BusinessException("ORDER_STATUS_CHANGED", "Cannot cancel order in status: " + currentStatus);
+            if (currentStatus == OrderStatus.PENDING_PAYMENT.getCode()) {
+                var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ?",
+                    (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo), orderId);
+                inventoryService.releaseBatch(items);
+                int affected = jdbc.update("UPDATE orders SET status=?, cancelled_at=NOW(), version=version+1 WHERE id=? AND status=?",
+                    OrderStatus.CANCELLED.getCode(), orderId, OrderStatus.PENDING_PAYMENT.getCode());
+                if (affected == 0) throw new BusinessException("ORDER_STATUS_CHANGED", "Order status already changed");
+                writeStatusLog(orderId, orderNo, OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED, "USER", reason);
+                writeOutbox("ORDER_CANCELLED", "ORDER", orderId, buildPayload(orderNo, reason));
+            } else if (currentStatus == OrderStatus.PAID.getCode()) {
+                var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ?",
+                    (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo), orderId);
+                inventoryService.releaseBatch(items);
+                int affected = jdbc.update("UPDATE orders SET status=?, version=version+1 WHERE id=? AND status=?",
+                    OrderStatus.REFUNDING.getCode(), orderId, OrderStatus.PAID.getCode());
+                if (affected == 0) throw new BusinessException("ORDER_STATUS_CHANGED", "Order status already changed");
+                writeStatusLog(orderId, orderNo, OrderStatus.PAID, OrderStatus.REFUNDING, "USER", reason);
+                writeOutbox("ORDER_CANCEL_REFUND", "ORDER", orderId, buildPayload(orderNo, reason));
+            } else if (currentStatus == OrderStatus.SHIPPED.getCode()) {
+                throw new BusinessException("ORDER_STATUS_CHANGED", "Cannot cancel shipped order");
+            } else {
+                throw new BusinessException("ORDER_STATUS_CHANGED", "Cannot cancel order in status: " + currentStatus);
+            }
+            idempotencyService.markCompleted(idempotencyKey, "USER", operatorId, "{}");
+            log.info("Order cancelled: orderNo={}, reason={}", orderNo, reason);
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "USER", operatorId);
+            throw e;
         }
-        idempotencyService.markCompleted(idempotencyKey, "USER", operatorId, "{}");
-        log.info("Order cancelled: orderNo={}, reason={}", orderNo, reason);
     }
 
     private String generateOrderNo() {

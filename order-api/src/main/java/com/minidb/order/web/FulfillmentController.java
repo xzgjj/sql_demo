@@ -42,7 +42,7 @@ public class FulfillmentController {
             @RequestHeader("X-User-Id") Long userId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam(name = "version") int version) {
-        fulfillmentService.claimTask(taskId, userId, version);
+        fulfillmentService.claimTask(taskId, userId, version, idempotencyKey);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 
@@ -52,7 +52,7 @@ public class FulfillmentController {
             @PathVariable("taskId") Long taskId,
             @RequestHeader("X-User-Id") Long userId,
             @RequestHeader("Idempotency-Key") String idempotencyKey) {
-        fulfillmentService.pickTask(taskId, userId);
+        fulfillmentService.pickTask(taskId, userId, idempotencyKey);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 
@@ -63,7 +63,7 @@ public class FulfillmentController {
             @RequestHeader("X-User-Id") Long userId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody ShipOrderRequest request) {
-        fulfillmentService.shipOrder(taskId, request.carrier(), request.trackingNo(), userId);
+        fulfillmentService.shipOrder(taskId, request.carrier(), request.trackingNo(), userId, idempotencyKey);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 }

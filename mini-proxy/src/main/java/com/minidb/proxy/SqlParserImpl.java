@@ -24,7 +24,7 @@ public class SqlParserImpl {
 
     private static final Set<String> PRIMARY_ONLY_TABLES = Set.of(
             "idempotency_records", "exception_tickets",
-            "products", "product_inventory", "order_route"
+            "products", "product_inventory", "order_route", "outbox_events"
     );
 
     public ParsedSql parse(String sql) {

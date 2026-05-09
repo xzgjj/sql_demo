@@ -1,11 +1,16 @@
 package com.minidb.proxy;
 
+import com.minidb.proxy.protocol.MySqlPacketEncoder;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -67,5 +72,30 @@ class BackendConnectionPoolTest {
         assertNotNull(reused);
         assertEquals(id, reused.dataSourceId());
         pool.release(reused);
+    }
+
+    @Test
+    void shouldWriteSqlAsComQueryPacket() {
+        DataSourceId id = new DataSourceId("test");
+        EmbeddedChannel channel = new EmbeddedChannel(new MySqlPacketEncoder());
+        BackendConnection conn = new BackendConnection(id, channel);
+
+        conn.writeComQuery("SELECT 1");
+
+        ByteBuf encoded = channel.readOutbound();
+        assertNotNull(encoded);
+
+        byte[] sql = "SELECT 1".getBytes(StandardCharsets.UTF_8);
+        int payloadLength = encoded.readUnsignedByte()
+                | (encoded.readUnsignedByte() << 8)
+                | (encoded.readUnsignedByte() << 16);
+        assertEquals(sql.length + 1, payloadLength);
+        assertEquals(0, encoded.readUnsignedByte());
+        assertEquals(0x03, encoded.readUnsignedByte());
+
+        byte[] actualSql = new byte[sql.length];
+        encoded.readBytes(actualSql);
+        assertArrayEquals(sql, actualSql);
+        encoded.release();
     }
 }

@@ -150,12 +150,13 @@ class SqlRouterImplTest {
     }
 
     @Test
-    void shouldRouteWriteWithoutShardKeyToPrimary() {
+    void shouldRejectWriteWithoutShardKeyOutsideTx() {
         // INSERT without explicit user_id shard key
-        ParsedSql insert = new ParsedSql(SqlType.INSERT, Set.of("t"), null,
-                null, AltRouteType.NONE, false, "INSERT INTO t VALUES (1)", false, false);
-        RoutePlan plan = router.route(session, insert);
-        assertEquals(DataSourceId.PRIMARY, plan.dataSourceId());
+        ParsedSql insert = new ParsedSql(SqlType.INSERT, Set.of("orders"), null,
+                null, AltRouteType.NONE, false, "INSERT INTO orders (id) VALUES (1)", false, false);
+        SqlRouterImpl.CrossShardException ex = assertThrows(SqlRouterImpl.CrossShardException.class,
+                () -> router.route(session, insert));
+        assertEquals(SqlRouterImpl.MISSING_SHARD_KEY, ex.errorCode());
     }
 
     @Test
@@ -184,10 +185,9 @@ class SqlRouterImplTest {
     void shouldThrowMissingShardKeyWhenAltRouteWithoutLookup() {
         // altRouteKey is set but no RouteTableLookup → should throw MISSING_SHARD_KEY
         ParsedSql sql = altRouteSql(AltRouteType.ORDER_NO, "ORD123");
-        // Outside tx: shardKey=null, no lookup → uses fallback primary
-        RoutePlan plan = router.route(session, sql);
-        assertEquals(DataSourceId.REPLICA, plan.dataSourceId());
-        assertNull(plan.shardId());
+        SqlRouterImpl.CrossShardException ex = assertThrows(SqlRouterImpl.CrossShardException.class,
+                () -> router.route(session, sql));
+        assertEquals(SqlRouterImpl.MISSING_SHARD_KEY, ex.errorCode());
     }
 
     @Test

@@ -196,9 +196,13 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
 
         // Add MySQL packet codec for backend connection
         var channel = connectFuture.channel();
-        if (channel.pipeline().get("backend-codec") == null) {
-            channel.pipeline().addLast("backend-codec",
+        if (channel.pipeline().get("backend-decoder") == null) {
+            channel.pipeline().addLast("backend-decoder",
                     new com.minidb.proxy.protocol.MySqlPacketDecoder());
+        }
+        if (channel.pipeline().get("backend-encoder") == null) {
+            channel.pipeline().addLast("backend-encoder",
+                    new com.minidb.proxy.protocol.MySqlPacketEncoder());
         }
 
         // Perform MySQL handshake + auth with backend

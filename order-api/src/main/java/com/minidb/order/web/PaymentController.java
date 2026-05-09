@@ -25,16 +25,18 @@ public class PaymentController {
     public ResponseEntity<ApiResponse<Map<String, String>>> createPayment(
             @PathVariable("orderId") Long orderId,
             @RequestHeader("X-User-Id") Long userId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam(name = "channel", defaultValue = "mock_pay") String channel) {
-        String paymentNo = paymentService.createPayment(orderId, userId, channel);
+        String paymentNo = paymentService.createPayment(orderId, userId, channel, idempotencyKey);
         return ResponseEntity.ok(ApiResponse.ok(Map.of("paymentNo", paymentNo)));
     }
 
     @PostMapping("/payments/callbacks/mock-pay")
-    @Operation(summary = "模拟支付回调", description = "支付回调入口。验签、金额校验、幂等处理。")
+    @Operation(summary = "模拟支付回调", description = "支付回调入口。必须携带 Idempotency-Key，验签、金额校验、幂等处理。")
     public ResponseEntity<ApiResponse<Void>> paymentCallback(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody PaymentCallbackRequest request) {
-        paymentService.handleCallback(request);
+        paymentService.handleCallback(request, idempotencyKey);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 }

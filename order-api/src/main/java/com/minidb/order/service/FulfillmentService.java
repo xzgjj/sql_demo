@@ -3,6 +3,7 @@ package com.minidb.order.service;
 import com.minidb.order.FulfillmentStatus;
 import com.minidb.order.OrderStatus;
 import com.minidb.order.BusinessException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -11,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
 
 /**
  * 履约服务。处理任务创建、领取（乐观锁）、拣货、发货。
@@ -22,12 +24,17 @@ public class FulfillmentService {
     private final JdbcTemplate jdbc;
     private final InventoryService inventoryService;
     private final OrderService orderService;
+    private final IdempotencyService idempotencyService;
+    private final ObjectMapper objectMapper;
 
     public FulfillmentService(JdbcTemplate jdbc, InventoryService inventoryService,
-                              OrderService orderService) {
+                              OrderService orderService, IdempotencyService idempotencyService,
+                              ObjectMapper objectMapper) {
         this.jdbc = jdbc;
         this.inventoryService = inventoryService;
         this.orderService = orderService;
+        this.idempotencyService = idempotencyService;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -70,10 +77,13 @@ public class FulfillmentService {
         );
 
         // 更新订单状态：已支付 → 待履约
-        jdbc.update(
+        int orderUpdated = jdbc.update(
             "UPDATE orders SET status = ?, version = version + 1 WHERE id = ? AND status = ?",
             OrderStatus.PENDING_FULFILLMENT.getCode(), orderId, OrderStatus.PAID.getCode()
         );
+        if (orderUpdated == 0) {
+            throw new BusinessException("ORDER_STATUS_CHANGED", "Order not in PAID status: " + orderId);
+        }
         jdbc.update(
             "INSERT INTO order_status_logs (order_id, order_no, from_status, to_status, operator, reason) " +
             "VALUES (?, ?, ?, ?, 'SYSTEM', 'Fulfillment task created')",
@@ -90,6 +100,24 @@ public class FulfillmentService {
      */
     @Transactional
     public void claimTask(long taskId, long userId, int expectedVersion) {
+        claimTaskCore(taskId, userId, expectedVersion);
+    }
+
+    @Transactional
+    public void claimTask(long taskId, long userId, int expectedVersion, String idempotencyKey) {
+        String requestBody = toJson(Map.of("taskId", taskId, "userId", userId, "expectedVersion", expectedVersion));
+        String cached = idempotencyService.tryAcquire(idempotencyKey, "USER", userId, requestBody);
+        if (cached != null) return;
+        try {
+            claimTaskCore(taskId, userId, expectedVersion);
+            idempotencyService.markCompleted(idempotencyKey, "USER", userId, "{}");
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "USER", userId);
+            throw e;
+        }
+    }
+
+    private void claimTaskCore(long taskId, long userId, int expectedVersion) {
         int affected = jdbc.update(
             "UPDATE fulfillment_tasks SET status = ?, assignee_id = ?, claimed_at = NOW(), version = version + 1 " +
             "WHERE id = ? AND status = ? AND version = ?",
@@ -116,7 +144,7 @@ public class FulfillmentService {
                 return new TaskInfo(
                     rs.getLong("id"), rs.getString("task_no"), rs.getLong("user_id"),
                     rs.getLong("order_id"), rs.getInt("status"),
-                    rs.getLong("assignee_id"), rs.getInt("version")
+                    (Long) rs.getObject("assignee_id"), rs.getInt("version")
                 );
             },
             taskId
@@ -129,6 +157,29 @@ public class FulfillmentService {
      */
     @Transactional
     public void shipOrder(long taskId, String carrier, String trackingNo, long operatorId) {
+        shipOrderCore(taskId, carrier, trackingNo, operatorId);
+    }
+
+    @Transactional
+    public void shipOrder(long taskId, String carrier, String trackingNo, long operatorId, String idempotencyKey) {
+        String requestBody = toJson(Map.of(
+            "taskId", taskId,
+            "carrier", carrier,
+            "trackingNo", trackingNo,
+            "operatorId", operatorId
+        ));
+        String cached = idempotencyService.tryAcquire(idempotencyKey, "USER", operatorId, requestBody);
+        if (cached != null) return;
+        try {
+            shipOrderCore(taskId, carrier, trackingNo, operatorId);
+            idempotencyService.markCompleted(idempotencyKey, "USER", operatorId, "{}");
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "USER", operatorId);
+            throw e;
+        }
+    }
+
+    private void shipOrderCore(long taskId, String carrier, String trackingNo, long operatorId) {
         // 1. 查询任务和关联订单
         var task = jdbc.query(
             "SELECT ft.task_no, ft.user_id, ft.order_id, ft.status, ft.version, " +
@@ -150,19 +201,28 @@ public class FulfillmentService {
         long userId = (long) task[1];
         long orderId = (long) task[2];
         int taskStatus = (int) task[3];
+        int orderStatus = (int) task[6];
         String orderNo = (String) task[5];
 
         if (taskStatus == FulfillmentStatus.SHIPPED.getCode()) {
             throw new BusinessException("TASK_ALREADY_SHIPPED", "Task already shipped: " + taskNo);
         }
+        if (orderStatus != OrderStatus.PENDING_FULFILLMENT.getCode()) {
+            throw new BusinessException("ORDER_STATUS_CHANGED", "Order not in PENDING_FULFILLMENT status");
+        }
 
         // 2. 更新履约任务 → SHIPPED
-        jdbc.update(
+        int taskUpdated = jdbc.update(
             "UPDATE fulfillment_tasks SET status = ?, shipped_at = NOW(), version = version + 1 " +
-            "WHERE id = ? AND status IN (?, ?)",
+            "WHERE id = ? AND assignee_id = ? AND status IN (?, ?)",
             FulfillmentStatus.SHIPPED.getCode(), taskId,
+            operatorId,
             FulfillmentStatus.PICKING.getCode(), FulfillmentStatus.PICKED.getCode()
         );
+        if (taskUpdated == 0) {
+            throw new BusinessException("TASK_STATUS_ERROR",
+                "Task must be assigned to operator and in PICKING or PICKED status");
+        }
 
         // 3. 更新订单 → SHIPPED
         int orderUpdated = jdbc.update(
@@ -206,7 +266,7 @@ public class FulfillmentService {
             java.util.Map<String, String> p = new java.util.LinkedHashMap<>();
             p.put("order_no", orderNo);
             p.put("tracking_no", trackingNo);
-            payload = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(p);
+            payload = objectMapper.writeValueAsString(p);
         } catch (Exception e) {
             throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize payload");
         }
@@ -269,6 +329,24 @@ public class FulfillmentService {
 
     @Transactional
     public void pickTask(long taskId, long userId) {
+        pickTaskCore(taskId, userId);
+    }
+
+    @Transactional
+    public void pickTask(long taskId, long userId, String idempotencyKey) {
+        String requestBody = toJson(Map.of("taskId", taskId, "userId", userId));
+        String cached = idempotencyService.tryAcquire(idempotencyKey, "USER", userId, requestBody);
+        if (cached != null) return;
+        try {
+            pickTaskCore(taskId, userId);
+            idempotencyService.markCompleted(idempotencyKey, "USER", userId, "{}");
+        } catch (RuntimeException e) {
+            idempotencyService.markFailed(idempotencyKey, "USER", userId);
+            throw e;
+        }
+    }
+
+    private void pickTaskCore(long taskId, long userId) {
         int affected = jdbc.update(
             "UPDATE fulfillment_tasks SET status = ?, version = version + 1 " +
             "WHERE id = ? AND status = ? AND assignee_id = ?",
@@ -291,4 +369,12 @@ public class FulfillmentService {
 
     public record TaskInfo(long id, String taskNo, long userId, long orderId, int status,
                            Long assigneeId, int version) {}
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize fulfillment request");
+        }
+    }
 }

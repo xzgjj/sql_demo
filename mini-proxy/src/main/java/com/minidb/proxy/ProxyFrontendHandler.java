@@ -169,7 +169,7 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         }
 
         backendConn.setClientChannel(ctx.channel());
-        backendConn.writeAndFlush(sql).addListener(future -> {
+        backendConn.writeComQuery(sql).addListener(future -> {
             if (!future.isSuccess()) {
                 log.error("Backend write failed to {}", backendConn.dataSourceId().name(), future.cause());
                 pool.invalidate(backendConn);
@@ -195,7 +195,7 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             BackendConnection bound = session.boundConnection();
 
             if (bound != null) {
-                bound.writeAndFlush(cmd).addListener(f -> {
+                bound.writeComQuery(cmd).addListener(f -> {
                     if (!f.isSuccess()) {
                         log.error("{} write failed", cmd, f.cause());
                         pool.invalidate(bound);
@@ -243,7 +243,7 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             BackendConnection bound = session.boundConnection();
             if (bound != null) {
                 if (session.inTransaction()) {
-                    bound.writeAndFlush("ROLLBACK");
+                    bound.writeComQuery("ROLLBACK");
                 }
                 bound.clearClientChannel();
                 pool.release(bound);

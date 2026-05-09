@@ -149,6 +149,12 @@ class SqlParserImplTest {
     }
 
     @Test
+    void shouldDetectOutboxEventsAsPrimaryOnly() {
+        ParsedSql result = parser.parse("SELECT * FROM outbox_events WHERE status = 10");
+        assertTrue(result.isPrimaryOnly());
+    }
+
+    @Test
     void shouldNotMarkShardedTableAsPrimaryOnly() {
         ParsedSql result = parser.parse("SELECT * FROM orders WHERE user_id = 100");
         assertFalse(result.isPrimaryOnly());

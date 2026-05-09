@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Outbox事件处理器。
@@ -27,11 +26,11 @@ public class OutboxProcessor {
      * 每10秒扫描一次未处理的outbox事件。
      */
     @Scheduled(fixedDelay = 10000)
-    @Transactional
     public void processOutbox() {
         var events = jdbc.query(
             "SELECT id, event_type, aggregate_type, aggregate_id, payload, retry_count " +
             "FROM outbox_events WHERE status = 10 " +  // 10 = NEW
+            "AND (next_retry_at IS NULL OR next_retry_at <= NOW()) " +
             "ORDER BY id LIMIT 10",
             (rs, rowNum) -> new Object[]{
                 rs.getLong("id"), rs.getString("event_type"),
@@ -47,14 +46,19 @@ public class OutboxProcessor {
             int retryCount = (int) event[5];
 
             try {
-                jdbc.update("UPDATE outbox_events SET status = 20 WHERE id = ?", eventId);
+                int claimed = jdbc.update("UPDATE outbox_events SET status = 20 WHERE id = ? AND status = 10",
+                    eventId);
+                if (claimed == 0) {
+                    log.debug("Outbox event {} already claimed by another processor", eventId);
+                    continue;
+                }
 
                 switch (eventType) {
                     case "ORDER_PAID" -> fulfillmentService.createTaskFromOrderPaid(aggregateId);
                     default -> log.debug("No handler for event type: {}", eventType);
                 }
 
-                jdbc.update("UPDATE outbox_events SET status = 30 WHERE id = ?", eventId);
+                jdbc.update("UPDATE outbox_events SET status = 30 WHERE id = ? AND status = 20", eventId);
                 log.debug("Outbox event {} processed: {}", eventId, eventType);
 
             } catch (Exception e) {
@@ -62,11 +66,11 @@ public class OutboxProcessor {
                 int nextRetry = Math.min(retryCount + 1, 5);
                 jdbc.update(
                     "UPDATE outbox_events SET status = 10, retry_count = ?, " +
-                    "next_retry_at = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE id = ?",
+                    "next_retry_at = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE id = ? AND status = 20",
                     nextRetry, (int) Math.pow(2, nextRetry) * 10, eventId
                 );
                 if (nextRetry >= 5) {
-                    jdbc.update("UPDATE outbox_events SET status = 40 WHERE id = ?", eventId);
+                    jdbc.update("UPDATE outbox_events SET status = 40 WHERE id = ? AND status = 10", eventId);
                     log.error("Outbox event {} exhausted retries", eventId);
                 }
             }
