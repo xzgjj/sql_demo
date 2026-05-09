@@ -12,6 +12,14 @@ body {
   min-height: 100%;
 }
 
+.app-shell .ant-layout {
+  min-width: 0;
+}
+
+.app-shell .ant-pro-page-container {
+  min-width: 0;
+}
+
 .app-sider {
   background: #ffffff !important;
   border-right: 1px solid #e5e7eb;
@@ -126,9 +134,31 @@ body {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
   padding: 12px 0;
   border-bottom: 1px solid #edf0f5;
+}
+
+.task-card-main {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.task-card-main strong,
+.task-card-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-actions {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+.table-actions {
+  max-width: 100%;
 }
 
 .funnel-row,

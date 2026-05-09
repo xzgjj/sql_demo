@@ -70,8 +70,11 @@ class ConsoleServiceTest {
     void shouldBuildOrderTraceFromRealTables() {
         consoleService.loadDemoData();
         Long orderId = jdbc.queryForObject("SELECT MIN(id) FROM orders", Long.class);
+        if (orderId == null) {
+            throw new AssertionError("Expected demo data to create at least one order");
+        }
 
-        var trace = consoleService.traceOrder(orderId);
+        var trace = consoleService.traceOrder(orderId.longValue());
 
         assertNotNull(trace.order().orderNo());
         assertTrue(trace.route().contains("shard_"));
@@ -98,6 +101,10 @@ class ConsoleServiceTest {
         assertEquals("mvcc-rc-rr", result.scenario());
         assertFalse(result.steps().isEmpty());
         assertFalse(result.mvccChains().isEmpty());
+        assertTrue(result.steps().stream().anyMatch(step -> step.contains("RC second read")));
+        assertTrue(result.steps().stream().anyMatch(step -> step.contains("RR second read")));
+        assertFalse(result.mvccSteps().isEmpty());
+        assertTrue(result.assertions().stream().anyMatch(assertion -> assertion.contains("RC 第二次读取")));
     }
 
     @Test

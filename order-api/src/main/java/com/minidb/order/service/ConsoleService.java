@@ -23,6 +23,7 @@ import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 @Service
 public class ConsoleService {
@@ -165,7 +166,7 @@ public class ConsoleService {
 
     public OrderTrace traceOrder(long orderId) {
         ensureSingleDatabaseConsoleQuery("order trace by order_id");
-        var order = jdbc.query(
+        var order = Objects.requireNonNull(jdbc.query(
                 "SELECT id, order_no, user_id, status, total_amount, paid_amount, created_at FROM orders WHERE id = ?",
                 rs -> {
                     if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
@@ -173,7 +174,7 @@ public class ConsoleService {
                             rs.getInt("status"), rs.getBigDecimal("total_amount"), rs.getBigDecimal("paid_amount"),
                             rs.getTimestamp("created_at").toLocalDateTime());
                 },
-                orderId);
+                orderId));
         int shard = (int) Math.floorMod(order.userId(), shardCount);
         var route = jdbc.query("SELECT order_no, payment_no, user_id, biz_type FROM order_route WHERE order_no = ?",
                 (rs, rn) -> new RouteEntry(rs.getString("order_no"), rs.getString("payment_no"),
@@ -255,7 +256,8 @@ public class ConsoleService {
                 "auto-commit split; no cross-shard transaction",
                 List.of("Idempotency-Key 返回第一次成功结果"),
                 List.of("ORDER_CREATED/ORDER_PAID 由 outbox_events 记录并重试"),
-                Map.of());
+                Map.of(), List.of(), List.of("业务场景使用 InnoDB 当前读/条件更新，自研 MVCC 只解释可见性"),
+                List.of("写接口必须带 Idempotency-Key", "状态更新必须带原状态条件"), List.of());
     }
 
     private LabRunResult runMvccScenario() {
@@ -270,17 +272,32 @@ public class ConsoleService {
                 ScenarioStep.get("t2", "order:501", "RC first read"),
                 ScenarioStep.begin("t3", IsolationLevel.REPEATABLE_READ),
                 ScenarioStep.get("t3", "order:501", "RR first read"),
-                ScenarioStep.put("t2", "order:501", "PAID".getBytes(StandardCharsets.UTF_8)),
-                ScenarioStep.commit("t2"),
+                ScenarioStep.begin("t4", IsolationLevel.READ_COMMITTED),
+                ScenarioStep.put("t4", "order:501", "PAID".getBytes(StandardCharsets.UTF_8)),
+                ScenarioStep.commit("t4"),
+                ScenarioStep.get("t2", "order:501", "RC second read"),
                 ScenarioStep.get("t3", "order:501", "RR second read")
         ));
         var steps = result.trace().stream()
-                .map(e -> e.sequence() + ". " + e.operation() + " " + (e.detail() == null ? "" : e.detail()))
+                .map(this::formatMvccStep)
+                .toList();
+        var mvccSteps = result.trace().stream()
+                .map(this::toMvccStepTrace)
                 .toList();
         var chains = Map.of("order:501", store.versionChainPrettyPrint("order:501"));
         return new LabRunResult("mvcc-rc-rr", steps, List.of(),
                 "RR 事务保持 Read View；RC 每次读取刷新可见性",
-                List.of(), List.of(), chains);
+                List.of(), List.of(), chains, mvccSteps,
+                List.of(
+                        "T2 使用 READ_COMMITTED：第一次读到 PENDING_PAYMENT，T4 提交 PAID 后第二次读到 PAID。",
+                        "T3 使用 REPEATABLE_READ：第一次读建立稳定 Read View，T4 后提交版本仍不可见。"
+                ),
+                List.of(
+                        "RC 第二次读取返回 PAID，说明已提交的新版本对新的 Read View 可见。",
+                        "RR 第二次读取仍返回 PENDING_PAYMENT，说明后提交的 PAID 版本对该 Read View 不可见。",
+                        "版本链保留最新版本和历史版本，用于解释为什么可见或不可见。"
+                ),
+                result.errors());
     }
 
     private LabRunResult runMvccWriteConflictScenario() {
@@ -294,13 +311,57 @@ public class ConsoleService {
                 ScenarioStep.put("t2", "inventory:sku-1001", "locked-by-t2".getBytes(StandardCharsets.UTF_8))
         ));
         var steps = result.trace().stream()
-                .map(e -> e.sequence() + ". " + e.operation() + " "
-                        + (e.detail() == null ? "" : e.detail()))
+                .map(this::formatMvccStep)
+                .toList();
+        var mvccSteps = result.trace().stream()
+                .map(this::toMvccStepTrace)
                 .toList();
         var chains = Map.of("inventory:sku-1001", store.versionChainPrettyPrint("inventory:sku-1001"));
         return new LabRunResult("mvcc-write-conflict", steps, List.of(),
                 "T2 attempts to write a key whose latest version is still owned by active T1.",
-                List.of(), List.of("Write conflict protects the latest uncommitted version."), chains);
+                List.of(), List.of("Write conflict protects the latest uncommitted version."), chains,
+                mvccSteps,
+                List.of("写写冲突不依赖快照读：写入前必须检查 key 的最新版本是否由活跃事务持有。"),
+                List.of("T2 写同一 key 被拒绝，避免覆盖 T1 未提交版本。"),
+                result.errors());
+    }
+
+    private String formatMvccStep(com.minidb.mvcc.TraceEvent event) {
+        String detail = event.detail() == null ? "" : " " + event.detail();
+        String key = event.key() == null || event.key().isBlank() ? "" : " key=" + event.key();
+        return event.sequence() + ". txn=" + event.txnId() + " " + event.operation() + key + detail;
+    }
+
+    private MvccStepTrace toMvccStepTrace(com.minidb.mvcc.TraceEvent event) {
+        String value = event.valueSnapshot() == null
+                ? null
+                : new String(event.valueSnapshot(), StandardCharsets.UTF_8);
+        return new MvccStepTrace(event.sequence(), event.txnId(), event.operation(),
+                event.key(), value, event.detail(), explainMvccEvent(event));
+    }
+
+    private String explainMvccEvent(com.minidb.mvcc.TraceEvent event) {
+        if ("BEGIN".equals(event.operation())) {
+            return event.detail() != null && event.detail().contains("REPEATABLE_READ")
+                    ? "开启 RR 事务；第一次一致性读会建立稳定 Read View。"
+                    : "开启 RC 事务；每次一致性读都会重新判断已提交版本。";
+        }
+        if ("GET".equals(event.operation())) {
+            return "沿版本链从新到旧检查提交状态和 Read View，可见的第一个版本就是读结果。";
+        }
+        if ("PUT".equals(event.operation())) {
+            return "写入会先检查最新版本，若最新版本属于其他活跃事务则触发写写冲突。";
+        }
+        if ("COMMIT".equals(event.operation())) {
+            return "提交后该事务写入的版本对后续 RC 读可见；已有 RR Read View 不会自动扩大。";
+        }
+        if ("ROLLBACK".equals(event.operation())) {
+            return "回滚会撤销该事务未提交版本，后续读回到上一条可见版本。";
+        }
+        if ("ERROR".equals(event.operation())) {
+            return "场景在此处触发预期保护逻辑，返回已执行步骤和错误位置。";
+        }
+        return "记录该步骤对版本链和可见性的影响。";
     }
 
     private CreatedOrder createOrder(long userId, String key) {
@@ -318,6 +379,9 @@ public class ConsoleService {
                     if (!rs.next()) throw new BusinessException("PAYMENT_NOT_FOUND", "Payment not found");
                     return rs.getBigDecimal("amount");
                 }, paymentNo);
+        if (amount == null) {
+            throw new BusinessException("PAYMENT_AMOUNT_NOT_FOUND", "Payment amount not found");
+        }
         BigDecimal callbackAmount = wrongAmount ? amount.subtract(BigDecimal.ONE) : amount;
         LocalDateTime paidAt = LocalDateTime.now();
         String status = "SUCCESS";
@@ -389,7 +453,7 @@ public class ConsoleService {
     }
 
     private long count(String sql) {
-        Long value = jdbc.queryForObject(sql, Long.class);
+        Long value = jdbc.queryForObject(Objects.requireNonNull(sql, "sql"), Long.class);
         return value == null ? 0 : value;
     }
 
@@ -450,9 +514,13 @@ public class ConsoleService {
                              List<OutboxTrace> outbox, List<TimelineTrace> timeline,
                              List<String> sqlHistory) {}
     public record RoutePreview(String sql, String keyType, String target, String reason, boolean executed) {}
+    public record MvccStepTrace(long sequence, long txnId, String operation, String key,
+                                String value, String detail, String explanation) {}
     public record LabRunResult(String scenario, List<String> steps, List<RoutePreview> routeTrace,
                                String transactionContext, List<String> idempotency,
-                               List<String> outbox, Map<String, String> mvccChains) {}
+                               List<String> outbox, Map<String, String> mvccChains,
+                               List<MvccStepTrace> mvccSteps, List<String> readViews,
+                               List<String> assertions, List<String> errors) {}
     public record RuntimeMode(String mode, boolean proxyMode, boolean demoEnabled, boolean testProfile,
                               int shardCount, String activeProfiles, List<String> warnings) {}
 

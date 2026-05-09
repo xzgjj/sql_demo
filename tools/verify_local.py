@@ -378,6 +378,7 @@ ORDER_EXPECTED_SOURCES = [
     "dto/CancelOrderRequest.java",
     "dto/ClaimTaskRequest.java",
     "dto/ShipOrderRequest.java",
+    "dto/ResolveExceptionRequest.java",
     "dto/ApiResponse.java",
     "service/IdempotencyService.java",
     "service/InventoryService.java",

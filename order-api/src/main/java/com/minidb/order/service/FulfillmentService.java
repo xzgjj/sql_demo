@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 履约服务。处理任务创建、领取（乐观锁）、拣货、发货。
@@ -181,7 +182,7 @@ public class FulfillmentService {
 
     private void shipOrderCore(long taskId, String carrier, String trackingNo, long operatorId) {
         // 1. 查询任务和关联订单
-        var task = jdbc.query(
+        var task = Objects.requireNonNull(jdbc.query(
             "SELECT ft.task_no, ft.user_id, ft.order_id, ft.status, ft.version, " +
             "o.order_no, o.status as order_status, o.version as order_version " +
             "FROM fulfillment_tasks ft JOIN orders o ON ft.order_id = o.id " +
@@ -195,7 +196,7 @@ public class FulfillmentService {
                 };
             },
             taskId
-        );
+        ));
 
         String taskNo = (String) task[0];
         long userId = (long) task[1];

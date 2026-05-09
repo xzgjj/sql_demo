@@ -27,6 +27,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 @Service
 public class PaymentService {
@@ -78,11 +79,11 @@ public class PaymentService {
     }
 
     private String createPaymentCore(Long orderId, Long userId, String channel) {
-        var order = jdbc.query(
+        var order = Objects.requireNonNull(jdbc.query(
             "SELECT order_no, status, total_amount FROM orders WHERE id = ? AND user_id = ?",
             rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found");
                 return new Object[]{rs.getString("order_no"), rs.getInt("status"), rs.getBigDecimal("total_amount")}; },
-            orderId, userId);
+            orderId, userId));
         if ((int) order[1] != OrderStatus.PENDING_PAYMENT.getCode())
             throw new BusinessException("ORDER_STATUS_CHANGED", "Order must be PENDING_PAYMENT");
 
@@ -123,12 +124,12 @@ public class PaymentService {
         if (!verifySignature(req)) throw new BusinessException("PAYMENT_SIGNATURE_INVALID", "Invalid payment signature");
 
         // Split query for sharding: first find payment (proxy does route lookup via payment_no)
-        var paymentInfo = jdbc.query(
+        var paymentInfo = Objects.requireNonNull(jdbc.query(
             "SELECT id, order_id, user_id, amount, status FROM payments WHERE payment_no = ?",
             rs -> { if (!rs.next()) throw new BusinessException("PAYMENT_NOT_FOUND", "Payment not found");
                 return new Object[]{rs.getLong("id"), rs.getLong("order_id"),
                     rs.getLong("user_id"), rs.getBigDecimal("amount"), rs.getInt("status")}; },
-            req.paymentNo());
+            req.paymentNo()));
         long paymentId = (long) paymentInfo[0]; long orderId = (long) paymentInfo[1];
         long userId = (long) paymentInfo[2];
         BigDecimal expected = (BigDecimal) paymentInfo[3]; int pStatus = (int) paymentInfo[4];
@@ -140,11 +141,11 @@ public class PaymentService {
         }
 
         // Then find order on same shard (both sharded by user_id)
-        var orderInfo = jdbc.query(
+        var orderInfo = Objects.requireNonNull(jdbc.query(
             "SELECT order_no, status FROM orders WHERE id = ? AND user_id = ?",
             rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found for payment");
                 return new Object[]{rs.getString("order_no"), rs.getInt("status")}; },
-            orderId, userId);
+            orderId, userId));
         String orderNo = (String) orderInfo[0];
 
         if (req.amount().compareTo(expected) != 0) {

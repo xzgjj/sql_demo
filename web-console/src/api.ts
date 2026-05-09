@@ -1,5 +1,17 @@
 export type ApiResponse<T> = { success: boolean; data: T; errorCode?: string; message?: string };
 
+export class ApiError extends Error {
+  errorCode?: string;
+  status: number;
+
+  constructor(message: string, status: number, errorCode?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
 export type DashboardSummary = {
   ordersToday: number;
   paidSuccess: number;
@@ -73,6 +85,10 @@ export type LabRunResult = {
   idempotency: string[];
   outbox: string[];
   mvccChains: Record<string, string>;
+  mvccSteps: Array<{ sequence: number; txnId: number; operation: string; key?: string; value?: string; detail?: string; explanation: string }>;
+  readViews: string[];
+  assertions: string[];
+  errors: string[];
 };
 
 export type RuntimeMode = {
@@ -92,7 +108,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   });
   const body = (await res.json()) as ApiResponse<T>;
   if (!res.ok || body.success === false) {
-    throw new Error(body.message || body.errorCode || `HTTP ${res.status}`);
+    throw new ApiError(body.message || body.errorCode || `HTTP ${res.status}`, res.status, body.errorCode);
   }
   return body.data;
 }
@@ -109,14 +125,15 @@ export const api = {
     body: JSON.stringify({ reason }),
   }),
   tasks: (status?: number) => request<TaskPage>(`/api/fulfillment/tasks?${pageParams(status)}`),
-  claim: (taskId: number, version: number) => request<void>(`/api/fulfillment/tasks/${taskId}/claim?version=${version}`, { method: 'POST', headers: { 'X-User-Id': '2001', 'Idempotency-Key': crypto.randomUUID() } }),
-  pick: (taskId: number) => request<void>(`/api/fulfillment/tasks/${taskId}/pick`, { method: 'POST', headers: { 'X-User-Id': '2001', 'Idempotency-Key': crypto.randomUUID() } }),
-  ship: (taskId: number) => request<void>(`/api/fulfillment/tasks/${taskId}/ship`, {
+  claim: (taskId: number, version: number, operatorId = 2001) => request<void>(`/api/fulfillment/tasks/${taskId}/claim?version=${version}`, { method: 'POST', headers: { 'X-User-Id': String(operatorId), 'Idempotency-Key': crypto.randomUUID() } }),
+  pick: (taskId: number, operatorId = 2001) => request<void>(`/api/fulfillment/tasks/${taskId}/pick`, { method: 'POST', headers: { 'X-User-Id': String(operatorId), 'Idempotency-Key': crypto.randomUUID() } }),
+  ship: (taskId: number, carrier: string, trackingNo: string, operatorId = 2001) => request<void>(`/api/fulfillment/tasks/${taskId}/ship`, {
     method: 'POST',
-    headers: { 'X-User-Id': '2001', 'Idempotency-Key': crypto.randomUUID() },
-    body: JSON.stringify({ carrier: 'mock_express', trackingNo: `EXP${Date.now()}` }),
+    headers: { 'X-User-Id': String(operatorId), 'Idempotency-Key': crypto.randomUUID() },
+    body: JSON.stringify({ carrier, trackingNo }),
   }),
   exceptions: (status?: number) => request<ExceptionPage>(`/api/exceptions?${pageParams(status)}`),
+  exceptionDetail: (id: number) => request<ExceptionItem>(`/api/exceptions/${id}`),
   resolve: (id: number, resolution: string) => request<void>(`/api/exceptions/${id}/resolve`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ resolution }) }),
   trace: (orderId: number) => request<OrderTrace>(`/api/audit/orders/${orderId}/trace`),
   routePreview: (sql: string) => request<Record<string, unknown>>(`/api/proxy/routes/preview?sql=${encodeURIComponent(sql)}`),

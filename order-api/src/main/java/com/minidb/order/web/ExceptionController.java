@@ -1,13 +1,13 @@
 package com.minidb.order.web;
 
 import com.minidb.order.dto.ApiResponse;
+import com.minidb.order.dto.ResolveExceptionRequest;
 import com.minidb.order.service.ExceptionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/exceptions")
@@ -41,8 +41,8 @@ public class ExceptionController {
     public ResponseEntity<ApiResponse<Void>> resolveException(
             @PathVariable("id") long id,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @RequestBody Map<String, String> body) {
-        exceptionService.resolveException(id, body.getOrDefault("resolution", "Manual resolution"), idempotencyKey);
+            @Valid @RequestBody ResolveExceptionRequest request) {
+        exceptionService.resolveException(id, request.resolution(), idempotencyKey);
         return ResponseEntity.ok(ApiResponse.ok(null));
     }
 }
