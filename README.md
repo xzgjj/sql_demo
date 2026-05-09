@@ -202,7 +202,8 @@ python tools/verify_local.py log-check --max-log-size-mb 20 --max-log-files 10
 python tools/verify_local.py log-check --apply
 ```
 
-后端构建与测试：
+- 后端构建与测试：
+
 
 ```bash
 mvn -B verify
@@ -211,7 +212,8 @@ mvn -pl mini-proxy test
 mvn -pl order-api test
 ```
 
-后端服务启动：
+- 后端服务启动：
+
 
 ```bash
 mvn -f order-api/pom.xml org.springframework.boot:spring-boot-maven-plugin:3.2.5:test-run -Dspring-boot.run.profiles=test
@@ -248,8 +250,9 @@ mvn -pl order-api flyway:info
 | 健康检查 | `http://127.0.0.1:8080/actuator/health` |
 | mini-proxy | `127.0.0.1:3306` |
 
-加载演示订单：
-OpenAPI/接口文档：http://localhost:8080/swagger-ui.html
+- 加载演示订单：
+
+- OpenAPI/接口文档：http://localhost:8080/swagger-ui.html
 
 运行模式接口：
 
@@ -333,7 +336,8 @@ sql_demo/
 
 ## 使用说明
 
-推荐按以下顺序理解和实现项目：
+- 推荐按以下顺序理解和实现项目：
+
 
 1. 先理解订单履约场景：创建订单、扣库存、支付成功、履约发货和取消订单。
 2. 再理解 `mini-mvcc`：用内存 KV 演示 RC/RR、Undo Log、Read View 和版本链。
@@ -365,25 +369,22 @@ sql_demo/
 
 ### proxy 一致性边界
 
-proxy 模式采用保守一致性策略：`mini-proxy` 不实现 XA、2PC 或跨分片事务，因此一个逻辑事务只能绑定一个物理后端数据源。事务一旦绑定 `PRIMARY` 或某个 `shard_N`，后续访问其他数据源会返回明确错误；缺少分片键、`OR` 分片条件、多行写入、无法证明单分片的 SQL 也会被拒绝。
+- proxy 模式采用保守一致性策略：`mini-proxy` 不实现 XA、2PC 或跨分片事务，因此一个逻辑事务只能绑定一个物理后端数据源。事务一旦绑定 `PRIMARY` 或某个 `shard_N`，后续访问其他数据源会返回明确错误；缺少分片键、`OR` 分片条件、多行写入、无法证明单分片的 SQL 也会被拒绝。
+
 
 订单履约完整写链路涉及 `products`、`product_inventory`、`idempotency_records`、`outbox_events`、`order_route` 等 PRIMARY 元数据表，以及 `orders`、`order_items`、`payments`、`fulfillment_tasks` 等分片业务表。当前项目没有分布式事务协调器，因此这些写流程仅在单库直连模式下作为完整业务闭环运行；proxy 模式用于验证分片路由、事务绑定、缺键拒绝、路由观测和只读/实验性查询。
 
-前端交互上需要向用户明确区分：
 
-- 订单履约终端：面向业务流程，使用单库直连模式，用户能创建订单、支付、取消、履约、查看异常和 outbox 状态。
-- 数据库实验终端：面向数据库学习，使用 proxy 实验模式，用户提交 SQL 后看到路由决策、绑定数据源、拒绝原因和事务状态。
-- 当用户在 proxy 模式尝试订单写流程时，接口返回 `PROXY_MODE_UNSUPPORTED_WRITE`，页面应展示“该流程跨 PRIMARY 与分片表，当前实验代理不支持跨数据源事务，请切回单库直连模式执行业务闭环”。
 
-本轮 P0/P1 验收标准：
+- 前端交互上需要向用户明确区分：
 
-- 事务内不会出现多个后端连接参与同一逻辑事务。
-- 跨数据源、跨分片事务必须拒绝，并给出可观察错误。
-- `ORDER_PAID` outbox payload 必须携带 `user_id`，履约消费按 `order_id + user_id` 定位订单。
-- 危险 SQL，包括 `OR` 分片条件、多语句、多行 INSERT、负数 `user_id`，必须拒绝或降级为缺分片键错误。
-- 连接池并发借用必须受最大连接数许可控制。
-- 状态更新必须携带原状态条件，涉及分片表的关键更新同时携带 `user_id`。
-- `mvn -B verify`、`python tools/verify_local.py --json`、前端 lint/test 必须通过；真实 proxy 联调可用时再执行 `python tools/proxy_smoke.py --execute --json`。
+订单履约终端：面向业务流程，使用单库直连模式，用户能创建订单、支付、取消、履约、查看异常和 outbox 状态。
+
+数据库实验终端：面向数据库学习，使用 proxy 实验模式，用户提交 SQL 后看到路由决策、绑定数据源、拒绝原因和事务状态。
+
+当用户在 proxy 模式尝试订单写流程时，接口返回 `PROXY_MODE_UNSUPPORTED_WRITE`，页面应展示“该流程跨 PRIMARY 与分片表，当前实验代理不支持跨数据源事务，请切回单库直连模式执行业务闭环”。
+
+
 
 proxy 实验模式启动参考：
 
@@ -412,7 +413,8 @@ python tools/proxy_smoke.py --execute --json
 
 
 
-本轮验收命令：
+- 本轮验收命令：
+
 
 ```bash
 mvn -pl mini-proxy test
@@ -454,6 +456,8 @@ mysql-shard-3 :shard_3
 ```
 
 MVP 阶段优先本地运行和 CI 验证，不依赖 Kubernetes、云服务或真实支付渠道。
+
+
 
 ## License
 
