@@ -308,14 +308,7 @@ sql_demo/
 5. 最后接入代理和分片：按 `user_id % N` 路由订单相关 SQL。
 6. 使用 Web 控制台分别验证业务动作和数据库观测，不把两类用户路径混成一个页面。
 
-第一版明确不做：
 
-- 完整 SQL 数据库。
-- 完整 MySQL 协议兼容。
-- 跨分片事务。
-- 自动跨分片 Join。
-- 真实支付 SDK。
-- 完整电商前台、ERP 或 WMS。
 
 关键业务约束：
 
@@ -325,21 +318,7 @@ sql_demo/
 - 缺少分片键的高风险查询必须拒绝。
 - 数据库结构变更必须通过 Flyway 迁移脚本执行。
 
-## 当前加固验收标准
 
-本轮项目审查后的统一加固目标：
-
-- MySQL 协议代理必须按官方协议发送后端 `COM_QUERY`：包头为 `3-byte payload_length + 1-byte sequence_id`，命令阶段序号从 `0` 开始，payload 首字节为 `0x03`，后接 SQL 文本。
-- `mini-proxy` 对访问分片表但缺少 `user_id`、`order_no` 或 `payment_no` 的读写 SQL 必须返回 `MISSING_SHARD_KEY`，只允许无表查询和 PRIMARY-only 控制表走默认路由。
-- 所有真实写接口必须消费 `Idempotency-Key`，业务失败要把幂等记录从 `PROCESSING` 标记为 `FAILED`，相同请求允许重试，不同请求必须拒绝。
-- 履约发货必须检查任务状态、认领人、订单原状态和库存影响行数，任一条件不满足不得继续写订单、发货单或 outbox。
-- `exception_tickets.detail`、`outbox_events.payload`、`idempotency_records.response_body` 必须写入合法 JSON 文本。
-- Outbox 处理必须先用条件更新领取事件，再分发，避免多处理器重复处理同一条 `NEW` 事件。
-
-对标依据：
-
-- MySQL 官方 Internals：Basic Packets、Command Phase、`COM_QUERY`。
-- ShardingSphere / Vitess / ProxySQL 的共同约束：代理层要把 SQL 语义解析、路由元数据和事务边界作为核心风险点处理；本项目只实现教学平台最小子集，不实现跨分片事务和跨分片 Join。
 
 本轮验收命令：
 
