@@ -44,6 +44,11 @@ public class MySqlPacketDecoder extends ByteToMessageDecoder {
         }
 
         ByteBuf payload = in.readRetainedSlice(payloadLength);
+        if (log.isDebugEnabled() && payloadLength > 0) {
+            int firstByte = payload.getUnsignedByte(0);
+            log.debug("Decoded packet: seq={}, len={}, cmd=0x{}",
+                    sequenceId, payloadLength, Integer.toHexString(firstByte));
+        }
         out.add(new MySqlPacket(payloadLength, sequenceId, payload));
     }
 }

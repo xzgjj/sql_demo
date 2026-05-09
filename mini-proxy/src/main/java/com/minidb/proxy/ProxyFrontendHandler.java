@@ -77,7 +77,19 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             HandshakeResponse41 response = HandshakeV10.parseResponse(packet.payload());
             byte[] scramble = ctx.channel().attr(SCRAMBLE_KEY).get();
 
-            boolean ok = AuthNativePassword.verify(scramble, config.proxyPassword(), response.authResponse());
+            if (scramble == null) {
+                log.error("No scramble found for channel");
+                ctx.writeAndFlush(ResponsePackets.err((byte) 2, 1064, "Internal error: no scramble"));
+                return;
+            }
+
+            byte[] expected = AuthNativePassword.computeAuthResponse(scramble, config.proxyPassword());
+            boolean ok = java.util.Arrays.equals(expected, response.authResponse());
+
+            if (!ok) {
+                log.debug("Auth: expected len={}, got len={}, authPlugin={}",
+                        expected.length, response.authResponse().length, response.authPluginName());
+            }
 
             if (ok) {
                 session.setState(ConnectionState.READY);

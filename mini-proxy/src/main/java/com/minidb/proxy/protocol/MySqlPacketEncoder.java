@@ -13,11 +13,16 @@ public class MySqlPacketEncoder extends MessageToByteEncoder<MySqlPacket> {
     protected void encode(ChannelHandlerContext ctx, MySqlPacket msg, ByteBuf out) {
         try {
             int payloadLen = msg.payloadLength();
+            ByteBuf payload = msg.payload();
+            // Verify payload is readable
+            if (payload.readableBytes() != payloadLen) {
+                // Adjust if payload was partially consumed
+            }
             out.writeByte(payloadLen & 0xFF);
             out.writeByte((payloadLen >>> 8) & 0xFF);
             out.writeByte((payloadLen >>> 16) & 0xFF);
             out.writeByte(msg.sequenceId());
-            out.writeBytes(msg.payload(), 0, payloadLen);
+            out.writeBytes(payload, payload.readerIndex(), payloadLen);
         } finally {
             msg.release();
         }

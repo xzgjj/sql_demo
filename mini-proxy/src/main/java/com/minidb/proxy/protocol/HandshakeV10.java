@@ -28,7 +28,7 @@ public final class HandshakeV10 {
     private HandshakeV10() {}
 
     public static MySqlPacket build(int connectionId, byte[] scramble) {
-        byte[] serverVersionBytes = "5.7.38-minidb-proxy".getBytes(StandardCharsets.US_ASCII);
+        byte[] serverVersionBytes = "8.4.9-minidb-proxy".getBytes(StandardCharsets.US_ASCII);
         byte[] pluginNameBytes = "mysql_native_password".getBytes(StandardCharsets.US_ASCII);
 
         int capabilityFlags = CapabilityFlags.SERVER_BASIC_FLAGS;
@@ -93,6 +93,11 @@ public final class HandshakeV10 {
                     "Handshake response too short: " + payload.readableBytes() + " bytes");
         }
         int capabilityFlags = (int) payload.readUnsignedIntLE();
+        // Note: MySQL HandshakeResponse41 first 4 bytes are:
+        //   bytes 0-1: capability flags (lower 16 bits)
+        //   bytes 2-3: max packet size (lower 16 bits)
+        // readUnsignedIntLE() reads them as a single 32-bit value.
+        // Capability flags lower 16 are in bits 0-15 of the result.
         int maxPacketSize = payload.readIntLE();
         byte characterSet = payload.readByte();
         payload.skipBytes(23); // reserved zeroes
@@ -175,6 +180,38 @@ public final class HandshakeV10 {
         }
 
         return scramble;
+    }
+
+    /**
+     * Extract the auth plugin name from a backend MySQL HandshakeV10 packet.
+     * Returns "mysql_native_password" if not found as safe default.
+     */
+    public static String extractAuthPluginName(byte[] payload) {
+        // The auth plugin name is at the end of the handshake, after the auth-plugin-data-part-2
+        int pos = 1; // skip protocol version
+        while (pos < payload.length && payload[pos] != 0) pos++; // server version
+        pos++; // null terminator
+        if (pos + 4 > payload.length) return "mysql_native_password";
+        pos += 4; // connection id
+        if (pos + 8 > payload.length) return "mysql_native_password";
+        pos += 8; // auth-plugin-data-part-1
+        pos++; // filler
+        pos += 2; // cap lower
+        pos += 1; // charset
+        pos += 2; // status
+        pos += 2; // cap upper
+        pos += 1; // auth data len
+        pos += 10; // reserved
+        // skip auth-plugin-data-part-2 (variable length, null-terminated)
+        while (pos < payload.length && payload[pos] != 0) pos++;
+        if (pos < payload.length) pos++; // null terminator
+        // remaining bytes = auth plugin name
+        if (pos < payload.length) {
+            int endPos = pos;
+            while (endPos < payload.length && payload[endPos] != 0) endPos++;
+            return new String(payload, pos, endPos - pos, java.nio.charset.StandardCharsets.UTF_8);
+        }
+        return "mysql_native_password";
     }
 
     private static int indexOfNullByte(ByteBuf buf) {
