@@ -302,6 +302,8 @@ PROXY_EXPECTED_SOURCES = [
     "BackendAuthHandler.java",
     "RouteTableLookup.java",
     "AltRouteType.java",
+    "ProxyManagementServer.java",
+    "RouteDecisionLog.java",
     "protocol/MySqlPacket.java",
     "protocol/MySqlPacketEncoder.java",
     "protocol/MySqlPacketDecoder.java",
