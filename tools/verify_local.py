@@ -302,6 +302,8 @@ PROXY_EXPECTED_SOURCES = [
     "BackendAuthHandler.java",
     "RouteTableLookup.java",
     "AltRouteType.java",
+    "ProxyManagementServer.java",
+    "RouteDecisionLog.java",
     "protocol/MySqlPacket.java",
     "protocol/MySqlPacketEncoder.java",
     "protocol/MySqlPacketDecoder.java",
@@ -345,6 +347,23 @@ def check_proxy_runtime_contract():
     return True, "proxy runtime contract ok"
 
 
+def check_proxy_smoke_tool():
+    script = ROOT / "tools" / "proxy_smoke.py"
+    if not script.exists():
+        return False, "tools/proxy_smoke.py missing"
+    code, output = run_command([sys.executable, str(script), "--json"], timeout=30)
+    if code != 0:
+        return False, output
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        return False, f"invalid proxy_smoke JSON: {exc}"
+    checks = payload.get("checks", [])
+    if not checks or any(not item.get("ok") for item in checks):
+        return False, "proxy_smoke dry-run checks failed"
+    return True, "proxy smoke dry-run ok"
+
+
 ORDER_EXPECTED_SOURCES = [
     "OrderApiApplication.java",
     "OrderApiModule.java",
@@ -359,6 +378,7 @@ ORDER_EXPECTED_SOURCES = [
     "dto/CancelOrderRequest.java",
     "dto/ClaimTaskRequest.java",
     "dto/ShipOrderRequest.java",
+    "dto/ResolveExceptionRequest.java",
     "dto/ApiResponse.java",
     "service/IdempotencyService.java",
     "service/InventoryService.java",
@@ -606,6 +626,9 @@ def main():
 
     ok, detail = check_proxy_runtime_contract()
     checks.append({"name": "proxy:runtime-contract", "ok": ok, "detail": detail})
+
+    ok, detail = check_proxy_smoke_tool()
+    checks.append({"name": "proxy:smoke-tool", "ok": ok, "detail": detail})
 
     ok, detail = check_order_sources()
     checks.append({"name": "order:source-files", "ok": ok, "detail": detail})

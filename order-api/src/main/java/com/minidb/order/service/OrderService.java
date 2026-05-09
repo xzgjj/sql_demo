@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 @Service
 public class OrderService {
@@ -95,7 +96,11 @@ public class OrderService {
                 ps.setString(5, req.remark()); ps.setObject(6, now.plusMinutes(paymentTimeoutMinutes));
                 return ps;
             }, keyHolder);
-            long orderId = keyHolder.getKeyAs(Long.class);
+            Long generatedOrderId = keyHolder.getKeyAs(Long.class);
+            if (generatedOrderId == null) {
+                throw new BusinessException("ORDER_ID_GENERATION_FAILED", "Failed to obtain generated order id");
+            }
+            long orderId = generatedOrderId;
 
             for (int i = 0; i < req.items().size(); i++) {
                 var item = req.items().get(i);
@@ -135,7 +140,7 @@ public class OrderService {
         if (cached != null) return;
 
         try {
-            var order = proxyMode
+            var order = Objects.requireNonNull(proxyMode
                 ? jdbc.query("SELECT order_no, user_id, status, version FROM orders WHERE id = ? AND user_id = ?",
                     rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
                         return new Object[]{rs.getString("order_no"), rs.getLong("user_id"), rs.getInt("status"), rs.getInt("version")}; },
@@ -143,7 +148,7 @@ public class OrderService {
                 : jdbc.query("SELECT order_no, user_id, status, version FROM orders WHERE id = ?",
                 rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
                     return new Object[]{rs.getString("order_no"), rs.getLong("user_id"), rs.getInt("status"), rs.getInt("version")}; },
-                orderId);
+                orderId));
             String orderNo = (String) order[0];
             long userId = (long) order[1];
             int currentStatus = (int) order[2];

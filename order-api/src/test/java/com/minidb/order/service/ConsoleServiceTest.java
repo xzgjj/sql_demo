@@ -55,11 +55,26 @@ class ConsoleServiceTest {
     }
 
     @Test
+    void shouldExposeRuntimeMode() {
+        var mode = consoleService.runtimeMode();
+
+        assertEquals("single-db", mode.mode());
+        assertFalse(mode.proxyMode());
+        assertTrue(mode.demoEnabled());
+        assertTrue(mode.testProfile());
+        assertEquals(4, mode.shardCount());
+        assertTrue(mode.warnings().isEmpty());
+    }
+
+    @Test
     void shouldBuildOrderTraceFromRealTables() {
         consoleService.loadDemoData();
         Long orderId = jdbc.queryForObject("SELECT MIN(id) FROM orders", Long.class);
+        if (orderId == null) {
+            throw new AssertionError("Expected demo data to create at least one order");
+        }
 
-        var trace = consoleService.traceOrder(orderId);
+        var trace = consoleService.traceOrder(orderId.longValue());
 
         assertNotNull(trace.order().orderNo());
         assertTrue(trace.route().contains("shard_"));
@@ -76,6 +91,7 @@ class ConsoleServiceTest {
 
         var rejected = consoleService.previewRoute("SELECT * FROM orders");
         assertEquals("REJECT", rejected.target());
+        assertTrue(rejected.reason().contains("MISSING_SHARD_KEY"));
     }
 
     @Test
@@ -85,6 +101,19 @@ class ConsoleServiceTest {
         assertEquals("mvcc-rc-rr", result.scenario());
         assertFalse(result.steps().isEmpty());
         assertFalse(result.mvccChains().isEmpty());
+        assertTrue(result.steps().stream().anyMatch(step -> step.contains("RC second read")));
+        assertTrue(result.steps().stream().anyMatch(step -> step.contains("RR second read")));
+        assertFalse(result.mvccSteps().isEmpty());
+        assertTrue(result.assertions().stream().anyMatch(assertion -> assertion.contains("RC 第二次读取")));
+    }
+
+    @Test
+    void shouldRunMvccWriteConflictScenario() {
+        var result = consoleService.runLabScenario("mvcc-write-conflict");
+
+        assertEquals("mvcc-write-conflict", result.scenario());
+        assertTrue(result.steps().stream().anyMatch(step -> step.contains("WriteConflictException")));
+        assertTrue(result.mvccChains().containsKey("inventory:sku-1001"));
     }
 
     private long countOrdersByStatus(int status) {

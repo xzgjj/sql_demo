@@ -28,6 +28,8 @@ public class MiniProxyServer {
         this.config = config;
     }
 
+    private ProxyManagementServer managementServer;
+
     public void start() throws InterruptedException {
         boolean epoll = Epoll.isAvailable();
         int threads = Runtime.getRuntime().availableProcessors();
@@ -39,6 +41,9 @@ public class MiniProxyServer {
                 config.backendHost(), config.primaryPort(),
                 config.backendUsername(), config.backendPassword(),
                 config.primaryDatabase(), config.backendConnectTimeoutMs());
+
+        // Observability: route decision ring buffer (last 2000 entries)
+        RouteDecisionLog decisionLog = new RouteDecisionLog(2000);
 
         // Shared components
         SqlParserImpl sqlParser = new SqlParserImpl();
@@ -65,10 +70,19 @@ public class MiniProxyServer {
                             config.shardDatabase(i)), 8);
         }
 
+        pool.startEviction();
+
+        // Start HTTP management server for observability
+        managementServer = new ProxyManagementServer(config.listenPort() + 1, config, pool, decisionLog);
+        managementServer.start();
+
+        ProxyChannelInitializer channelInit = new ProxyChannelInitializer(config, sqlParser, router, pool, decisionLog);
+        channelInit.setManagementServer(managementServer);
+
         ServerBootstrap b = new ServerBootstrap();
         b.group(bossGroup, workerGroup)
                 .channel(epoll ? EpollServerSocketChannel.class : NioServerSocketChannel.class)
-                .childHandler(new ProxyChannelInitializer(config, sqlParser, router, pool))
+                .childHandler(channelInit)
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);
@@ -81,6 +95,9 @@ public class MiniProxyServer {
 
     public void shutdown() {
         running = false;
+        if (managementServer != null) {
+            managementServer.shutdown();
+        }
         if (pool != null) {
             pool.drainAndClose();
         }

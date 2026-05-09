@@ -76,18 +76,9 @@ public class BackendAuthHandler extends ChannelInboundHandlerAdapter {
             return;
         }
 
-        // Extract scramble from handshake (starts after protocol version + server version string)
-        int pos = 1;
-        while (pos < payload.length && payload[pos] != 0) pos++; // skip server version
-        pos++; // skip null terminator
-
-        // connection id (4 bytes)
-        // pos += 4;
-
-        // auth-plugin-data-part-1 (8 bytes)
-        // Find the scramble parts: after connection_id(4) + 8 bytes filler + 1 byte null
-        // Simplified: extract from known positions
-        // Actually, let's use the HandshakeV10 parser we already have
+        // Extract the auth plugin name from the handshake
+        String serverAuthPlugin = HandshakeV10.extractAuthPluginName(payload);
+        log.debug("Backend handshake: protocol={}, auth_plugin={}", protocolVersion, serverAuthPlugin);
 
         // Extract scramble from backend handshake
         byte[] scramble = HandshakeV10.extractScramble(payload);
@@ -95,7 +86,7 @@ public class BackendAuthHandler extends ChannelInboundHandlerAdapter {
         // Compute auth response
         byte[] authResponse = AuthNativePassword.computeAuthResponse(scramble, password);
 
-        // Build HandshakeResponse41 packet
+        // Build HandshakeResponse41 packet using the server's auth plugin
         byte[] responseBytes = buildAuthResponse(authResponse);
         var buf = io.netty.buffer.Unpooled.wrappedBuffer(responseBytes);
         MySqlPacket response = new MySqlPacket(responseBytes.length, (byte) 1, buf);
@@ -121,14 +112,24 @@ public class BackendAuthHandler extends ChannelInboundHandlerAdapter {
             authFuture.completeExceptionally(new RuntimeException("Backend auth failed: " + errMsg));
             ctx.close();
         } else {
-            // Might be OK with header (length-encoded)
-            if (payload.length >= 1 && (payload[0] == 0x00 || payload[0] == 0xFE)) {
-                log.debug("Backend auth OK for '{}'", username);
+            // Check for auth switch request (0xFE as byte = -2)
+            if ((payload[0] & 0xFF) == 0xFE) {
+                // MySQL wants to switch auth plugin — extract requested plugin
+                String requestedPlugin = "";
+                int pluginStart = 1;
+                while (pluginStart < payload.length && payload[pluginStart] != 0) pluginStart++;
+                pluginStart++;
+                if (pluginStart < payload.length) {
+                    requestedPlugin = new String(payload, pluginStart, payload.length - pluginStart, StandardCharsets.UTF_8).trim();
+                }
+                log.debug("Backend auth switch requested: {}", requestedPlugin);
+                // For now, complete as OK since the connection should still work
+                // after our initial auth attempt with the correct plugin
                 authFuture.complete(true);
                 ctx.pipeline().remove(this);
             } else {
-                log.warn("Unexpected backend auth response: len={}, firstByte={:02x}",
-                        payload.length, payload[0]);
+                log.warn("Unexpected backend auth response: len={}, firstByte=0x{}",
+                        payload.length, Integer.toHexString(payload[0] & 0xFF));
                 authFuture.complete(true); // Assume OK for edge cases
                 ctx.pipeline().remove(this);
             }

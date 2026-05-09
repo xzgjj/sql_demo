@@ -51,7 +51,7 @@ public record ProxyConfig(
                 intSetting("MINIDB_SHARD_COUNT", 4),
                 intSetting("MINIDB_BACKEND_CONNECT_TIMEOUT_MS", 5000),
                 setting("MINIDB_BACKEND_HOST", "127.0.0.1"),
-                intSetting("MINIDB_BACKEND_PORT_BASE", 3307),
+                intSetting("MINIDB_BACKEND_PORT_BASE", 4407),
                 setting("MINIDB_PRIMARY_DATABASE", "minidb"),
                 setting("MINIDB_REPLICA_DATABASE", "minidb"),
                 setting("MINIDB_SHARD_DATABASE_PREFIX", "minidb_shard_")

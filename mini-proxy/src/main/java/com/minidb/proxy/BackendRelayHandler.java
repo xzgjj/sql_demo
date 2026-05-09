@@ -1,5 +1,6 @@
 package com.minidb.proxy;
 
+import com.minidb.proxy.protocol.MySqlPacket;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -25,13 +26,21 @@ public class BackendRelayHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (connection.shouldSuppressResponse()) {
+            log.debug("Backend relay: suppressing response");
             ReferenceCountUtil.release(msg);
             return;
         }
         Channel clientChannel = connection.clientChannel();
         if (clientChannel != null && clientChannel.isActive()) {
+            if (msg instanceof MySqlPacket pkt) {
+                int firstByte = pkt.payload().readableBytes() > 0 ? pkt.payload().getByte(pkt.payload().readerIndex()) & 0xFF : -1;
+                log.debug("Backend relay: seq={}, len={}, firstByte=0x{}",
+                        pkt.sequenceId(), pkt.payloadLength(),
+                        firstByte >= 0 ? Integer.toHexString(firstByte) : "?");
+            }
             clientChannel.writeAndFlush(msg, clientChannel.voidPromise());
         } else {
+            log.debug("Backend relay: no client channel, releasing");
             ReferenceCountUtil.release(msg);
         }
     }

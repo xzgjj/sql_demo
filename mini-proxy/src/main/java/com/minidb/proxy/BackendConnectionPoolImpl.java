@@ -149,7 +149,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
                 conn.close();
             }
         }
-        log.info("Connection pool drained");
+        log.debug("Connection pool drained");
     }
 
     private void evictIdleConnections() {
@@ -180,11 +180,42 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         }
     }
 
+    // ---- observability ----
+
+    public int activeCount(DataSourceId id) {
+        return activeCounts.getOrDefault(id, new AtomicInteger(0)).get();
+    }
+
+    public int idleCount(DataSourceId id) {
+        BlockingQueue<BackendConnection> q = idleQueues.get(id);
+        return q == null ? 0 : q.size();
+    }
+
+    public int maxSize(DataSourceId id) {
+        return maxSizes.getOrDefault(id, 0);
+    }
+
+    public int totalActive() {
+        return activeCounts.values().stream().mapToInt(AtomicInteger::get).sum();
+    }
+
+    public boolean isHealthy(DataSourceId id) {
+        return serverConfigs.containsKey(id);
+    }
+
+    public java.util.Set<DataSourceId> registeredDataSources() {
+        return java.util.Collections.unmodifiableSet(serverConfigs.keySet());
+    }
+
     private BackendConnection createConnection(DataSourceId id) {
         BackendServerConfig cfg = serverConfigs.get(id);
         if (cfg == null) return null;
 
-        ChannelFuture connectFuture = connect(cfg.host(), cfg.port());
+        // Build auth handler ahead of time so the ChannelInitializer can wire it
+        BackendAuthHandler authHandler = new BackendAuthHandler(
+                cfg.username(), cfg.password(), cfg.database());
+
+        ChannelFuture connectFuture = connect(cfg.host(), cfg.port(), authHandler);
         if (!connectFuture.awaitUninterruptibly(connectTimeoutMs)) {
             log.error("Connection timeout to {}:{}", cfg.host(), cfg.port());
             return null;
@@ -194,42 +225,36 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
             return null;
         }
 
-        // Add MySQL packet codec for backend connection
-        var channel = connectFuture.channel();
-        if (channel.pipeline().get("backend-decoder") == null) {
-            channel.pipeline().addLast("backend-decoder",
-                    new com.minidb.proxy.protocol.MySqlPacketDecoder());
-        }
-        if (channel.pipeline().get("backend-encoder") == null) {
-            channel.pipeline().addLast("backend-encoder",
-                    new com.minidb.proxy.protocol.MySqlPacketEncoder());
-        }
-
-        // Perform MySQL handshake + auth with backend
-        BackendAuthHandler authHandler = new BackendAuthHandler(
-                cfg.username(), cfg.password(), cfg.database());
-        channel.pipeline().addLast("backend-auth", authHandler);
-
         try {
             Boolean ok = authHandler.authFuture().get(connectTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
             if (!ok) {
-                channel.close();
+                connectFuture.channel().close();
                 return null;
             }
         } catch (Exception e) {
             log.error("Backend auth failed to {}:{}", cfg.host(), cfg.port(), e);
-            channel.close();
+            connectFuture.channel().close();
             return null;
         }
 
         // Auth succeeded, BackendAuthHandler has removed itself from pipeline.
-        return new BackendConnection(id, channel);
+        return new BackendConnection(id, connectFuture.channel());
     }
 
-    private ChannelFuture connect(String host, int port) {
+    private ChannelFuture connect(String host, int port, BackendAuthHandler authHandler) {
         Bootstrap b = new Bootstrap();
         b.group(workerGroup)
                 .channel(Epoll.isAvailable() ? EpollSocketChannel.class : NioSocketChannel.class)
+                .handler(new io.netty.channel.ChannelInitializer<io.netty.channel.socket.SocketChannel>() {
+                    @Override
+                    protected void initChannel(io.netty.channel.socket.SocketChannel ch) {
+                        ch.pipeline().addLast("backend-decoder",
+                                new com.minidb.proxy.protocol.MySqlPacketDecoder());
+                        ch.pipeline().addLast("backend-encoder",
+                                new com.minidb.proxy.protocol.MySqlPacketEncoder());
+                        ch.pipeline().addLast("backend-auth", authHandler);
+                    }
+                })
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeoutMs)
                 .option(ChannelOption.TCP_NODELAY, true)
                 .option(ChannelOption.SO_KEEPALIVE, true)

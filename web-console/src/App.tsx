@@ -3,12 +3,12 @@ import { PageContainer, ProCard, ProTable } from '@ant-design/pro-components';
 import type { ProColumns } from '@ant-design/pro-components';
 import { Alert, Button, Descriptions, Drawer, Input, Layout, Menu, Modal, Progress, Radio, Segmented, Select, Skeleton, Space, Statistic, Tabs, Tag, Timeline, Typography, message } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
-import { api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, TaskItem, orderStatusText, taskStatusText } from './api';
+import { ApiError, api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, ProxyDecisionsResult, ProxyPoolsResult, ProxySessionsResult, RuntimeMode, TaskItem, orderStatusText, taskStatusText } from './api';
 import { Lang, tr } from './i18n';
 
 const { Sider, Header, Content } = Layout;
 
-type PageKey = 'dashboard' | 'orders' | 'fulfillment' | 'exceptions' | 'lab' | 'trace' | 'routePreview' | 'settings';
+type PageKey = 'dashboard' | 'orders' | 'fulfillment' | 'exceptions' | 'lab' | 'trace' | 'routePreview' | 'proxy' | 'settings';
 type TerminalKey = 'business' | 'database';
 
 const menuIcon = {
@@ -19,12 +19,13 @@ const menuIcon = {
   lab: <DatabaseOutlined />,
   trace: <FileSearchOutlined />,
   routePreview: <FileSearchOutlined />,
+  proxy: <DatabaseOutlined />,
   settings: <SettingOutlined />,
 };
 
 const terminalPages: Record<TerminalKey, PageKey[]> = {
   business: ['dashboard', 'orders', 'fulfillment', 'exceptions', 'settings'],
-  database: ['lab', 'trace', 'routePreview', 'settings'],
+  database: ['lab', 'trace', 'routePreview', 'proxy', 'settings'],
 };
 
 const defaultPage: Record<TerminalKey, PageKey> = {
@@ -40,6 +41,7 @@ const pageSegments: Record<PageKey, string> = {
   lab: 'lab',
   trace: 'trace',
   routePreview: 'route-preview',
+  proxy: 'proxy',
   settings: 'settings',
 };
 
@@ -55,6 +57,7 @@ const databaseSegmentMap: Record<string, PageKey> = {
   lab: 'lab',
   trace: 'trace',
   'route-preview': 'routePreview',
+  proxy: 'proxy',
   settings: 'settings',
 };
 
@@ -81,10 +84,16 @@ export default function App() {
   const [terminal, setTerminal] = useState<TerminalKey>(initialLocation.terminal);
   const [page, setPage] = useState<PageKey>(initialLocation.page);
   const [health, setHealth] = useState<'checking' | 'ready' | 'error'>('checking');
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>();
   const [traceOrderId, setTraceOrderId] = useState(initialLocation.orderId ?? 1);
 
   useEffect(() => {
-    api.dashboard().then(() => setHealth('ready')).catch(() => setHealth('error'));
+    api.runtimeMode()
+      .then((mode) => {
+        setRuntimeMode(mode);
+        setHealth('ready');
+      })
+      .catch(() => api.dashboard().then(() => setHealth('ready')).catch(() => setHealth('error')));
   }, []);
 
   useEffect(() => {
@@ -144,6 +153,7 @@ export default function App() {
           <Tag color={health === 'ready' ? 'green' : health === 'checking' ? 'blue' : 'red'}>
             {healthText(health, lang)}
           </Tag>
+          {runtimeMode && <Tag color={runtimeMode.proxyMode ? 'purple' : 'blue'}>{runtimeMode.mode}</Tag>}
         </div>
       </Sider>
       <Layout>
@@ -165,6 +175,9 @@ export default function App() {
           </div>
         </Header>
         <Content>
+          {runtimeMode?.warnings?.length ? (
+            <Alert className="runtime-alert" type="warning" showIcon message={runtimeMode.warnings.join(' ')} />
+          ) : null}
           {terminal === 'business' && page === 'dashboard' && <Dashboard lang={lang} openPage={(target) => navigate('business', target)} />}
           {terminal === 'business' && page === 'orders' && <Orders lang={lang} openTrace={(orderId) => navigate('database', 'trace', orderId)} />}
           {terminal === 'business' && page === 'fulfillment' && <Fulfillment lang={lang} />}
@@ -172,7 +185,8 @@ export default function App() {
           {terminal === 'database' && page === 'lab' && <Lab lang={lang} />}
           {terminal === 'database' && page === 'trace' && <DatabaseTrace lang={lang} orderId={traceOrderId} setOrderId={updateTraceOrderId} backToOrders={() => navigate('business', 'orders', traceOrderId)} />}
           {terminal === 'database' && page === 'routePreview' && <RoutePreview lang={lang} />}
-          {page === 'settings' && <Settings lang={lang} health={health} />}
+          {terminal === 'database' && page === 'proxy' && <ProxyPage lang={lang} />}
+          {page === 'settings' && <Settings lang={lang} health={health} runtimeMode={runtimeMode} />}
         </Content>
       </Layout>
     </Layout>
@@ -311,36 +325,79 @@ function Orders({ lang, openTrace }: { lang: Lang; openTrace: (orderId: number) 
   const [rows, setRows] = useState<OrderSummary[]>([]);
   const [selected, setSelected] = useState<OrderDetail>();
   const [loading, setLoading] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<OrderSummary | OrderDetail>();
+  const [cancelReason, setCancelReason] = useState(lang === 'zh' ? '运营确认取消，释放未支付库存' : 'Operator confirmed cancellation');
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
+  const [lastError, setLastError] = useState<string>();
 
   const reload = useCallback(async () => {
     setLoading(true);
     try {
       setRows((await api.orders(userId, status)).items);
+      setLastError(undefined);
     } catch (e) {
-      message.error((e as Error).message);
+      const text = formatApiError(e, lang);
+      setLastError(text);
+      message.error(text);
     } finally {
       setLoading(false);
     }
-  }, [userId, status]);
+  }, [userId, status, lang]);
 
   useEffect(() => { void reload(); }, [reload]);
 
   const columns: ProColumns<OrderSummary>[] = [
-    { title: 'Order No', dataIndex: 'orderNo' },
-    { title: lang === 'zh' ? '状态' : 'Status', dataIndex: 'status', render: (_, r) => <Tag color={r.status === 90 ? 'red' : 'blue'}>{orderStatusText(r.status, lang)}</Tag> },
-    { title: lang === 'zh' ? '金额' : 'Amount', dataIndex: 'totalAmount' },
-    { title: lang === 'zh' ? '明细数' : 'Items', dataIndex: 'itemCount' },
-    { title: lang === 'zh' ? '创建时间' : 'Created At', dataIndex: 'createdAt' },
-    { title: lang === 'zh' ? '操作' : 'Action', valueType: 'option', render: (_, r) => [
-      <Button key="detail" onClick={async () => setSelected(await api.order(r.orderId, userId))}>{tr(lang, 'details')}</Button>,
-      <Button key="trace" onClick={() => openTrace(r.orderId)}>{lang === 'zh' ? '数据库链路' : 'Trace'}</Button>,
-      r.status === 10 && <Button key="cancel" danger onClick={() => cancelOrder(r.orderId, userId, reload, lang)}>{tr(lang, 'cancel')}</Button>,
-    ] },
+    { title: 'Order No', dataIndex: 'orderNo', width: 220, ellipsis: true },
+    { title: lang === 'zh' ? '状态' : 'Status', dataIndex: 'status', width: 96, render: (_, r) => <Tag color={r.status === 90 ? 'red' : 'blue'}>{orderStatusText(r.status, lang)}</Tag> },
+    { title: lang === 'zh' ? '金额' : 'Amount', dataIndex: 'totalAmount', width: 80 },
+    { title: lang === 'zh' ? '明细数' : 'Items', dataIndex: 'itemCount', width: 80 },
+    { title: lang === 'zh' ? '创建时间' : 'Created At', dataIndex: 'createdAt', width: 190 },
+    { title: lang === 'zh' ? '操作' : 'Action', valueType: 'option', width: 230, render: (_, r) => (
+      <Space className="table-actions" wrap size={8}>
+        <Button onClick={async () => {
+          try {
+            setSelected(await api.order(r.orderId, userId));
+          } catch (e) {
+            message.error(formatApiError(e, lang));
+          }
+        }}>{tr(lang, 'details')}</Button>
+        <Button onClick={() => openTrace(r.orderId)}>{lang === 'zh' ? '数据库链路' : 'Trace'}</Button>
+        {(r.status === 10 || r.status === 20) && <Button danger onClick={() => {
+          setCancelTarget(r);
+          setCancelReason(r.status === 20
+            ? (lang === 'zh' ? '已支付订单取消，进入退款或异常处理' : 'Paid order cancellation moves to refund handling')
+            : (lang === 'zh' ? '待支付订单取消，释放锁定库存' : 'Pending order cancellation releases locked stock'));
+        }}>{tr(lang, 'cancel')}</Button>}
+      </Space>
+    ) },
   ];
+
+  const confirmCancel = async () => {
+    if (!cancelTarget) return;
+    if (!cancelReason.trim()) {
+      message.warning(lang === 'zh' ? '请填写取消原因' : 'Cancellation reason is required');
+      return;
+    }
+    setCancelSubmitting(true);
+    try {
+      await api.cancelOrder(cancelTarget.orderId, userId, cancelReason.trim());
+      message.success(lang === 'zh' ? '订单已更新，正在刷新列表' : 'Order updated; refreshing');
+      setCancelTarget(undefined);
+      await reload();
+      if (selected?.orderId === cancelTarget.orderId) {
+        setSelected(await api.order(cancelTarget.orderId, userId));
+      }
+    } catch (e) {
+      message.error(formatApiError(e, lang));
+    } finally {
+      setCancelSubmitting(false);
+    }
+  };
 
   return (
     <PageContainer title={tr(lang, 'orders')} extra={<Space><Input value={userId} onChange={(e) => setUserId(Number(e.target.value) || 0)} prefix="user_id" /><Button type="primary" onClick={reload}>{tr(lang, 'refresh')}</Button></Space>}>
       <Space direction="vertical" className="full" size={16}>
+        {lastError && <Alert type="error" showIcon message={lang === 'zh' ? '订单列表加载失败' : 'Failed to load orders'} description={lastError} action={<Button size="small" onClick={reload}>{tr(lang, 'refresh')}</Button>} />}
         <ProCard>
           <Space wrap>
             <Segmented
@@ -358,20 +415,54 @@ function Orders({ lang, openTrace }: { lang: Lang; openTrace: (orderId: number) 
             <Tag>{lang === 'zh' ? `当前 ${rows.length} 条` : `${rows.length} rows`}</Tag>
           </Space>
         </ProCard>
-        <ProTable rowKey="orderId" search={false} loading={loading} columns={columns} dataSource={rows} pagination={false} />
+        <ProTable rowKey="orderId" search={false} loading={loading} columns={columns} dataSource={rows} pagination={false} scroll={{ x: 900 }} />
       </Space>
-      <OrderDrawer lang={lang} order={selected} onClose={() => setSelected(undefined)} onTrace={openTrace} />
+      <OrderDrawer lang={lang} order={selected} onClose={() => setSelected(undefined)} onTrace={openTrace} onCancel={(order) => setCancelTarget(order)} />
+      <Modal
+        title={lang === 'zh' ? '确认取消订单' : 'Confirm Cancellation'}
+        open={!!cancelTarget}
+        confirmLoading={cancelSubmitting}
+        okText={tr(lang, 'cancel')}
+        okButtonProps={{ danger: true }}
+        onOk={confirmCancel}
+        onCancel={() => setCancelTarget(undefined)}
+      >
+        <Space direction="vertical" className="full">
+          <Alert
+            type="warning"
+            showIcon
+            message={lang === 'zh' ? '取消影响确认' : 'Cancellation impact'}
+            description={cancelTarget?.status === 20
+              ? (lang === 'zh' ? '已支付订单不会直接发货，系统会进入退款中或异常处理路径。' : 'Paid orders will not be shipped and move to refund or exception handling.')
+              : (lang === 'zh' ? '待支付订单会释放锁定库存并写入状态日志与 outbox。' : 'Pending orders release locked stock and write status log/outbox.')}
+          />
+          <Descriptions column={1} size="small">
+            <Descriptions.Item label="Order No">{cancelTarget?.orderNo}</Descriptions.Item>
+            <Descriptions.Item label={lang === 'zh' ? '当前状态' : 'Current Status'}>{cancelTarget ? orderStatusText(cancelTarget.status, lang) : '-'}</Descriptions.Item>
+          </Descriptions>
+          <Input.TextArea
+            rows={4}
+            maxLength={256}
+            showCount
+            value={cancelReason}
+            onChange={(e) => setCancelReason(e.target.value)}
+          />
+        </Space>
+      </Modal>
     </PageContainer>
   );
 }
 
-function OrderDrawer({ lang, order, onClose, onTrace }: { lang: Lang; order?: OrderDetail; onClose: () => void; onTrace: (orderId: number) => void }) {
+function OrderDrawer({ lang, order, onClose, onTrace, onCancel }: { lang: Lang; order?: OrderDetail; onClose: () => void; onTrace: (orderId: number) => void; onCancel: (order: OrderDetail) => void }) {
   return (
     <Drawer width={760} open={!!order} onClose={onClose} title={order?.orderNo}>
       {order && (
         <Space direction="vertical" size={16} className="full">
           <ProCard>
-            <Button onClick={() => { onTrace(order.orderId); onClose(); }}>{lang === 'zh' ? '查看数据库链路' : 'Open Database Trace'}</Button>
+            <Space>
+              <Button onClick={() => { onTrace(order.orderId); onClose(); }}>{lang === 'zh' ? '查看数据库链路' : 'Open Database Trace'}</Button>
+              {(order.status === 10 || order.status === 20) && <Button danger onClick={() => onCancel(order)}>{tr(lang, 'cancel')}</Button>}
+            </Space>
           </ProCard>
           <Tabs items={[
             { key: 'timeline', label: lang === 'zh' ? '时间线' : 'Timeline', children: <Timeline items={order.statusTimeline.map((x) => ({ children: `${orderStatusText(x.toStatus, lang)} - ${x.reason}` }))} /> },
@@ -387,28 +478,106 @@ function OrderDrawer({ lang, order, onClose, onTrace }: { lang: Lang; order?: Or
 
 function Fulfillment({ lang }: { lang: Lang }) {
   const [rows, setRows] = useState<TaskItem[]>([]);
-  const reload = async () => setRows((await api.tasks()).items);
-  useEffect(() => { void reload(); }, []);
+  const [loading, setLoading] = useState(false);
+  const [actionKey, setActionKey] = useState<string>();
+  const [shipTarget, setShipTarget] = useState<TaskItem>();
+  const [carrier, setCarrier] = useState('mock_express');
+  const [trackingNo, setTrackingNo] = useState('');
+  const [error, setError] = useState<string>();
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      setRows((await api.tasks()).items);
+      setError(undefined);
+    } catch (e) {
+      const text = formatApiError(e, lang);
+      setError(text);
+      message.error(text);
+    } finally {
+      setLoading(false);
+    }
+  }, [lang]);
+  useEffect(() => { void reload(); }, [reload]);
+
+  const runTaskAction = async (key: string, action: () => Promise<void>, successText: string) => {
+    setActionKey(key);
+    try {
+      await action();
+      message.success(successText);
+      await reload();
+    } catch (e) {
+      message.error(formatApiError(e, lang));
+    } finally {
+      setActionKey(undefined);
+    }
+  };
+
+  const openShipModal = (task: TaskItem) => {
+    setShipTarget(task);
+    setCarrier('mock_express');
+    setTrackingNo(`EXP${Date.now()}`);
+  };
+
+  const confirmShip = async () => {
+    if (!shipTarget) return;
+    if (!carrier.trim() || !trackingNo.trim()) {
+      message.warning(lang === 'zh' ? '承运商和运单号必填' : 'Carrier and tracking number are required');
+      return;
+    }
+    await runTaskAction(`ship-${shipTarget.taskId}`,
+      () => api.ship(shipTarget.taskId, carrier.trim(), trackingNo.trim(), shipTarget.assigneeId ?? 2001),
+      lang === 'zh' ? '发货完成，订单状态已刷新' : 'Shipment completed');
+    setShipTarget(undefined);
+  };
+
   return (
     <PageContainer title={tr(lang, 'fulfillment')} extra={<Button onClick={reload}>{tr(lang, 'refresh')}</Button>}>
       <Alert className="bottom-gap" type="info" showIcon message={lang === 'zh' ? '如果任务已被他人领取，刷新后再继续处理。' : 'Refresh before retrying if another operator has claimed the task.'} />
+      {error && <Alert className="bottom-gap" type="error" showIcon message={lang === 'zh' ? '履约任务加载失败' : 'Failed to load fulfillment tasks'} description={error} action={<Button size="small" onClick={reload}>{tr(lang, 'refresh')}</Button>} />}
       <div className="kanban">
         {[10, 20, 30, 90].map((status) => (
           <ProCard key={status} title={taskStatusText(status, lang)} extra={<Tag>{rows.filter((x) => x.status === status).length}</Tag>}>
-            {rows.filter((x) => x.status === status).length === 0 && <EmptyText lang={lang} />}
+            {loading && rows.length === 0 && <Skeleton active paragraph={{ rows: 3 }} />}
+            {!loading && rows.filter((x) => x.status === status).length === 0 && <EmptyText lang={lang} />}
             {rows.filter((x) => x.status === status).map((task) => (
               <div className="task-card" key={task.taskId}>
-                <div><strong>{task.taskNo}</strong><span>{task.orderNo}</span><span>v{task.version} / user {task.userId}</span></div>
-                <Space>
-                  {task.status === 10 && <Button type="primary" onClick={async () => { await api.claim(task.taskId, task.version); await reload(); }}>{tr(lang, 'claim')}</Button>}
-                  {task.status === 20 && <Button onClick={async () => { await api.pick(task.taskId); await reload(); }}>{tr(lang, 'pick')}</Button>}
-                  {task.status === 30 && <Button onClick={async () => { await api.ship(task.taskId); await reload(); }}>{tr(lang, 'ship')}</Button>}
+                <div className="task-card-main"><strong>{task.taskNo}</strong><span>{task.orderNo}</span><span>v{task.version} / user {task.userId}</span></div>
+                <Space className="task-actions" wrap size={8}>
+                  {task.status === 10 && <Button type="primary" loading={actionKey === `claim-${task.taskId}`} onClick={() => runTaskAction(`claim-${task.taskId}`, () => api.claim(task.taskId, task.version), lang === 'zh' ? '任务已领取' : 'Task claimed')}>{tr(lang, 'claim')}</Button>}
+                  {task.status === 20 && <Button loading={actionKey === `pick-${task.taskId}`} onClick={() => runTaskAction(`pick-${task.taskId}`, () => api.pick(task.taskId, task.assigneeId ?? 2001), lang === 'zh' ? '拣货完成' : 'Picked')}>{tr(lang, 'pick')}</Button>}
+                  {(task.status === 20 || task.status === 30) && <Button loading={actionKey === `ship-${task.taskId}`} onClick={() => openShipModal(task)}>{tr(lang, 'ship')}</Button>}
                 </Space>
               </div>
             ))}
           </ProCard>
         ))}
       </div>
+      <Modal
+        title={lang === 'zh' ? '确认发货' : 'Confirm Shipment'}
+        open={!!shipTarget}
+        confirmLoading={actionKey === `ship-${shipTarget?.taskId}`}
+        okText={tr(lang, 'ship')}
+        onOk={confirmShip}
+        onCancel={() => setShipTarget(undefined)}
+      >
+        <Space direction="vertical" className="full">
+          <Alert
+            type="warning"
+            showIcon
+            message={lang === 'zh' ? '发货会推进订单状态' : 'Shipment advances order status'}
+            description={lang === 'zh' ? '系统会校验任务归属、任务状态和订单状态，成功后写入 shipment、库存流水、状态日志和 outbox。' : 'The system validates assignment, task status and order status, then writes shipment, inventory journal, status log and outbox.'}
+          />
+          <Descriptions column={1} size="small">
+            <Descriptions.Item label={lang === 'zh' ? '任务号' : 'Task No'}>{shipTarget?.taskNo}</Descriptions.Item>
+            <Descriptions.Item label="Order No">{shipTarget?.orderNo}</Descriptions.Item>
+            <Descriptions.Item label={lang === 'zh' ? '任务状态' : 'Task Status'}>{shipTarget ? taskStatusText(shipTarget.status, lang) : '-'}</Descriptions.Item>
+            <Descriptions.Item label={lang === 'zh' ? '操作人' : 'Operator'}>{shipTarget?.assigneeId ?? 2001}</Descriptions.Item>
+          </Descriptions>
+          <Input maxLength={64} value={carrier} onChange={(e) => setCarrier(e.target.value)} prefix={lang === 'zh' ? '承运商' : 'Carrier'} />
+          <Input maxLength={64} value={trackingNo} onChange={(e) => setTrackingNo(e.target.value)} prefix={lang === 'zh' ? '运单号' : 'Tracking No'} />
+        </Space>
+      </Modal>
     </PageContainer>
   );
 }
@@ -416,12 +585,61 @@ function Fulfillment({ lang }: { lang: Lang }) {
 function Exceptions({ lang }: { lang: Lang }) {
   const [rows, setRows] = useState<ExceptionItem[]>([]);
   const [bizType, setBizType] = useState<string>('all');
-  const reload = async () => setRows((await api.exceptions()).items);
-  useEffect(() => { void reload(); }, []);
+  const [selected, setSelected] = useState<ExceptionItem>();
+  const [resolution, setResolution] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      setRows((await api.exceptions()).items);
+      setError(undefined);
+    } catch (e) {
+      const text = formatApiError(e, lang);
+      setError(text);
+      message.error(text);
+    } finally {
+      setLoading(false);
+    }
+  }, [lang]);
+  useEffect(() => { void reload(); }, [reload]);
   const filtered = bizType === 'all' ? rows : rows.filter((x) => x.bizType === bizType);
+
+  const openDetail = async (id: number) => {
+    try {
+      const detail = await api.exceptionDetail(id);
+      setSelected(detail);
+      setResolution(suggestedAction(detail.reasonCode, lang));
+    } catch (e) {
+      message.error(formatApiError(e, lang));
+    }
+  };
+
+  const resolveSelected = async () => {
+    if (!selected) return;
+    if (!resolution.trim()) {
+      message.warning(lang === 'zh' ? '请填写处理说明' : 'Resolution note is required');
+      return;
+    }
+    setResolving(true);
+    try {
+      await api.resolve(selected.id, resolution.trim());
+      message.success(lang === 'zh' ? '异常已解决，列表已刷新' : 'Exception resolved');
+      setSelected(undefined);
+      await reload();
+    } catch (e) {
+      message.error(formatApiError(e, lang));
+    } finally {
+      setResolving(false);
+    }
+  };
+
   return (
     <PageContainer title={tr(lang, 'exceptions')} extra={<Button onClick={reload}>{tr(lang, 'refresh')}</Button>}>
       <Space direction="vertical" className="full" size={16}>
+        {error && <Alert type="error" showIcon message={lang === 'zh' ? '异常列表加载失败' : 'Failed to load exceptions'} description={error} action={<Button size="small" onClick={reload}>{tr(lang, 'refresh')}</Button>} />}
         <ProCard>
           <Space wrap>
             <Segmented value={bizType} onChange={(v) => setBizType(String(v))} options={[
@@ -438,10 +656,50 @@ function Exceptions({ lang }: { lang: Lang }) {
         { title: lang === 'zh' ? '类型' : 'Type', dataIndex: 'bizType' },
         { title: lang === 'zh' ? '原因' : 'Reason', dataIndex: 'reasonCode' },
         { title: lang === 'zh' ? '建议动作' : 'Suggested Action', render: (_, r) => suggestedAction(r.reasonCode, lang) },
-        { title: lang === 'zh' ? '状态' : 'Status', dataIndex: 'status', render: (_, r) => <Tag color={r.status === 10 ? 'red' : 'blue'}>{r.status}</Tag> },
-        { title: lang === 'zh' ? '操作' : 'Action', valueType: 'option', render: (_, r) => <Button onClick={async () => { await api.resolve(r.id, 'console resolved'); await reload(); }}>{tr(lang, 'resolve')}</Button> },
-        ]} pagination={false} />
+        { title: lang === 'zh' ? '状态' : 'Status', dataIndex: 'status', render: (_, r) => <Tag color={r.status === 10 ? 'red' : 'green'}>{exceptionStatusText(r.status, lang)}</Tag> },
+        { title: lang === 'zh' ? '操作' : 'Action', valueType: 'option', render: (_, r) => <Button onClick={() => openDetail(r.id)}>{tr(lang, 'details')}</Button> },
+        ]} pagination={false} loading={loading} />
       </Space>
+      <Drawer
+        width={720}
+        open={!!selected}
+        onClose={() => setSelected(undefined)}
+        title={selected ? `${selected.bizType} / ${selected.bizNo}` : undefined}
+        extra={selected?.status === 10 ? <Button type="primary" loading={resolving} onClick={resolveSelected}>{tr(lang, 'resolve')}</Button> : undefined}
+      >
+        {selected && (
+          <Space direction="vertical" className="full" size={16}>
+            <Alert
+              type={selected.status === 10 ? 'warning' : 'success'}
+              showIcon
+              message={selected.reasonCode}
+              description={suggestedAction(selected.reasonCode, lang)}
+            />
+            <Descriptions bordered column={1} size="small">
+              <Descriptions.Item label={lang === 'zh' ? '业务类型' : 'Biz Type'}>{selected.bizType}</Descriptions.Item>
+              <Descriptions.Item label={lang === 'zh' ? '业务号' : 'Biz No'}>{selected.bizNo}</Descriptions.Item>
+              <Descriptions.Item label={lang === 'zh' ? '状态' : 'Status'}>{exceptionStatusText(selected.status, lang)}</Descriptions.Item>
+              <Descriptions.Item label={lang === 'zh' ? '创建时间' : 'Created At'}>{selected.createdAt}</Descriptions.Item>
+            </Descriptions>
+            <ProCard title={lang === 'zh' ? '异常证据' : 'Exception Evidence'}>
+              <pre>{prettyJson(selected.detail)}</pre>
+            </ProCard>
+            {selected.status === 10 ? (
+              <ProCard title={lang === 'zh' ? '处理说明' : 'Resolution Note'}>
+                <Input.TextArea
+                  rows={5}
+                  maxLength={512}
+                  showCount
+                  value={resolution}
+                  onChange={(e) => setResolution(e.target.value)}
+                />
+              </ProCard>
+            ) : (
+              <Alert type="info" message={lang === 'zh' ? '该异常已处理，不能重复解决。' : 'This exception is already handled and cannot be resolved again.'} />
+            )}
+          </Space>
+        )}
+      </Drawer>
     </PageContainer>
   );
 }
@@ -450,10 +708,16 @@ function Lab({ lang }: { lang: Lang }) {
   const [scenario, setScenario] = useState('create-order');
   const [result, setResult] = useState<LabRunResult>();
   const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string>();
   const run = async () => {
     setRunning(true);
     try {
       setResult(await api.runScenario(scenario));
+      setError(undefined);
+    } catch (e) {
+      const text = formatApiError(e, lang);
+      setError(text);
+      message.error(text);
     } finally {
       setRunning(false);
     }
@@ -474,6 +738,7 @@ function Lab({ lang }: { lang: Lang }) {
                 { value: 'create-order', label: lang === 'zh' ? '创建订单：库存锁定、幂等、outbox、路由表' : 'Create Order' },
                 { value: 'payment-callback', label: lang === 'zh' ? '支付回调：验签、金额校验、异常工单' : 'Payment Callback' },
                 { value: 'mvcc-rc-rr', label: lang === 'zh' ? 'MVCC：RC / RR Read View 对比' : 'MVCC RC vs RR' },
+                { value: 'mvcc-write-conflict', label: lang === 'zh' ? 'MVCC：写写冲突保护最新版本' : 'MVCC Write Conflict' },
               ]} />
             </Space>
           </ProCard>
@@ -485,29 +750,78 @@ function Lab({ lang }: { lang: Lang }) {
             </Descriptions>
           </ProCard>
         </div>
-        {result && (
-          <div className="two-col wide-left">
-            <ProCard title={lang === 'zh' ? '执行步骤' : 'Step Timeline'}>
-              <Timeline items={result.steps.map((x) => ({ children: x }))} />
-            </ProCard>
-            <ProCard title={lang === 'zh' ? '机制证据' : 'Evidence'}>
-              <TracePanel lang={lang} trace={{ transactionContext: result.transactionContext, sqlHistory: [], outbox: result.outbox, idempotency: result.idempotency, routeTable: result.routeTrace, timeline: [], route: '', order: { orderId: 0, orderNo: '', userId: 0, status: 0, totalAmount: 0, paidAmount: 0 } }} />
-            </ProCard>
-          </div>
-        )}
+        {error && <Alert type="error" showIcon message={lang === 'zh' ? '实验运行失败' : 'Lab scenario failed'} description={error} />}
+        {result && <LabResult lang={lang} result={result} />}
       </Space>
     </PageContainer>
   );
 }
 
+function LabResult({ lang, result }: { lang: Lang; result: LabRunResult }) {
+  const mvccRows = (result.mvccSteps ?? []).map((step) => ({ ...step, rowKey: `${step.sequence}-${step.operation}` }));
+  return (
+    <Space direction="vertical" className="full" size={16}>
+      <div className="metric-grid">
+        <ProCard><Statistic title={lang === 'zh' ? '步骤数' : 'Steps'} value={result.steps.length} /></ProCard>
+        <ProCard><Statistic title={lang === 'zh' ? '版本链' : 'Version Chains'} value={Object.keys(result.mvccChains ?? {}).length} /></ProCard>
+        <ProCard><Statistic title={lang === 'zh' ? '断言' : 'Assertions'} value={(result.assertions ?? []).length} /></ProCard>
+        <ProCard><Statistic title={lang === 'zh' ? '错误位置' : 'Errors'} value={(result.errors ?? []).length} valueStyle={{ color: result.errors?.length ? '#dc2626' : undefined }} /></ProCard>
+      </div>
+      <Tabs items={[
+        {
+          key: 'timeline',
+          label: lang === 'zh' ? '步骤解释' : 'Step Explanation',
+          children: <Timeline items={result.steps.map((x) => ({ children: x }))} />,
+        },
+        {
+          key: 'mvcc',
+          label: lang === 'zh' ? 'MVCC 细节' : 'MVCC Details',
+          children: mvccRows.length ? (
+            <ProTable rowKey="rowKey" search={false} pagination={false} dataSource={mvccRows} columns={[
+              { title: '#', dataIndex: 'sequence', width: 64 },
+              { title: 'txn', dataIndex: 'txnId', width: 80 },
+              { title: lang === 'zh' ? '动作' : 'Operation', dataIndex: 'operation', width: 110, render: (_, r) => <Tag color={r.operation === 'ERROR' ? 'red' : 'blue'}>{r.operation}</Tag> },
+              { title: 'key', dataIndex: 'key', ellipsis: true },
+              { title: lang === 'zh' ? '读值' : 'Value', dataIndex: 'value', ellipsis: true },
+              { title: lang === 'zh' ? '为什么' : 'Why', dataIndex: 'explanation', ellipsis: true },
+            ]} />
+          ) : <TracePanel lang={lang} trace={{ transactionContext: result.transactionContext, sqlHistory: [], outbox: result.outbox, idempotency: result.idempotency, routeTable: result.routeTrace, timeline: [], route: '', order: { orderId: 0, orderNo: '', userId: 0, status: 0, totalAmount: 0, paidAmount: 0 } }} />,
+        },
+        {
+          key: 'readview',
+          label: 'Read View',
+          children: (
+            <Space direction="vertical" className="full">
+              {(result.readViews ?? []).map((item) => <Alert key={item} type="info" message={item} />)}
+              {(result.assertions ?? []).map((item) => <Alert key={item} type="success" message={item} />)}
+              {(result.errors ?? []).map((item) => <Alert key={item} type="error" message={item} />)}
+            </Space>
+          ),
+        },
+        {
+          key: 'chains',
+          label: lang === 'zh' ? '版本链' : 'Version Chains',
+          children: <pre>{Object.entries(result.mvccChains ?? {}).map(([key, value]) => `${key}\n${value}`).join('\n\n') || (lang === 'zh' ? '无版本链数据' : 'No version chain data')}</pre>,
+        },
+      ]} />
+    </Space>
+  );
+}
+
 function DatabaseTrace({ lang, orderId, setOrderId, backToOrders }: { lang: Lang; orderId: number; setOrderId: (id: number) => void; backToOrders: () => void }) {
   const [trace, setTrace] = useState<OrderTrace>();
+  const [decisions, setDecisions] = useState<ProxyDecisionsResult>();
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setTrace(await api.trace(orderId));
+      const [t, d] = await Promise.all([
+        api.trace(orderId),
+        api.proxyDecisions(20),
+      ]);
+      setTrace(t);
+      setDecisions(d);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -534,18 +848,95 @@ function DatabaseTrace({ lang, orderId, setOrderId, backToOrders }: { lang: Lang
           </ProCard>
           <ProCard title={lang === 'zh' ? '证据覆盖' : 'Evidence Coverage'}>
             <div className="evidence-grid">
-              <Tag color={trace?.routeTable?.length ? 'green' : 'default'}>SQL Route</Tag>
+              <Tag color={trace?.routeTable?.length ? 'green' : 'default'}>Route Table</Tag>
               <Tag color={trace?.idempotency?.length ? 'green' : 'default'}>Idempotency</Tag>
               <Tag color={trace?.outbox?.length ? 'green' : 'default'}>Outbox</Tag>
-              <Tag color={trace?.sqlHistory?.length ? 'green' : 'default'}>SQL History</Tag>
+              <Tag color={trace?.timeline?.length ? 'green' : 'default'}>Timeline</Tag>
+              {decisions?.decisions?.length ? <Tag color="green">Proxy Log</Tag> : <Tag>Proxy Log</Tag>}
             </div>
           </ProCard>
         </div>
         {trace?.order && <TraceSummary trace={trace} lang={lang} />}
-        <TracePanel lang={lang} trace={trace} />
+        <Tabs items={[
+          {
+            key: 'overview', label: lang === 'zh' ? '链路总览' : 'Overview',
+            children: <TraceTimelineView trace={trace} decisions={decisions} lang={lang} />,
+          },
+          {
+            key: 'route', label: lang === 'zh' ? '路由表' : 'Route Table',
+            children: <ProTable rowKey="orderNo" search={false} pagination={false}
+              dataSource={(trace?.routeTable ?? []).map((r) => r as Record<string, unknown>)}
+              columns={[
+                { title: 'order_no', dataIndex: 'orderNo' }, { title: 'payment_no', dataIndex: 'paymentNo' },
+                { title: 'user_id', dataIndex: 'userId' }, { title: 'biz_type', dataIndex: 'bizType' },
+              ]}
+            />,
+          },
+          {
+            key: 'idempotency', label: lang === 'zh' ? '幂等记录' : 'Idempotency',
+            children: <ProTable rowKey="key" search={false} pagination={false}
+              dataSource={(trace?.idempotency ?? []).map((r) => r as Record<string, unknown>)}
+              columns={[
+                { title: 'Key', dataIndex: 'key', ellipsis: true }, { title: 'actor', dataIndex: 'actorType' },
+                { title: 'status', dataIndex: 'status' }, { title: 'created', dataIndex: 'createdAt' },
+              ]}
+            />,
+          },
+          {
+            key: 'outbox', label: lang === 'zh' ? '事件箱' : 'Outbox',
+            children: <ProTable rowKey="id" search={false} pagination={false}
+              dataSource={(trace?.outbox ?? []).map((r) => r as Record<string, unknown>)}
+              columns={[
+                { title: 'ID', dataIndex: 'id' }, { title: 'Event', dataIndex: 'eventType' },
+                { title: 'Aggregate', dataIndex: 'aggregateType' }, { title: 'Status', dataIndex: 'status' },
+                { title: 'Retry', dataIndex: 'retryCount' }, { title: 'Created', dataIndex: 'createdAt' },
+              ]}
+            />,
+          },
+          {
+            key: 'sql', label: lang === 'zh' ? 'SQL 历史' : 'SQL History',
+            children: <pre className="trace-pre">{(trace?.sqlHistory ?? []).join('\n\n')}</pre>,
+          },
+        ]} />
       </Space>
     </PageContainer>
   );
+}
+
+function TraceTimelineView({ trace, decisions, lang }: { trace?: OrderTrace; decisions?: ProxyDecisionsResult; lang: Lang }) {
+  const items: Array<{ color: string; children: React.ReactNode }> = [];
+
+  if (trace?.route) {
+    items.push({ color: 'blue', children: <span><strong>{lang === 'zh' ? '路由策略' : 'Route'}:</strong> {trace.route}</span> });
+  }
+  if (trace?.transactionContext) {
+    items.push({ color: 'purple', children: <span><strong>{lang === 'zh' ? '事务上下文' : 'Transaction'}:</strong> {trace.transactionContext}</span> });
+  }
+
+  trace?.timeline?.forEach((t) => {
+    const item = t as Record<string, unknown>;
+    items.push({ color: 'green', children: <span>{lang === 'zh' ? '状态变更' : 'Status'}: <Tag>{String(item.toStatus)}</Tag> {String(item.reason ?? '')} <Typography.Text type="secondary">{String(item.createdAt ?? '')}</Typography.Text></span> });
+  });
+
+  trace?.idempotency?.forEach((r) => {
+    const item = r as Record<string, unknown>;
+    items.push({ color: 'orange', children: <span>{lang === 'zh' ? '幂等' : 'Idempotency'}: <Tag>{String(item.status)}</Tag> key={String(item.key ?? '').substring(0, 24)}...</span> });
+  });
+
+  trace?.outbox?.forEach((r) => {
+    const item = r as Record<string, unknown>;
+    items.push({ color: 'cyan', children: <span>Outbox: <Tag>{String(item.eventType)}</Tag> status={String(item.status)} retry={String(item.retryCount)}</span> });
+  });
+
+  decisions?.decisions?.slice(0, 10).forEach((d) => {
+    items.push({ color: d.status === 'ERR' ? 'red' : 'blue', children: <span>Proxy: <Tag color={d.target === 'REJECTED' ? 'red' : 'blue'}>{d.keyType}</Tag> {d.sql} → <strong>{d.target}</strong> <Typography.Text type="secondary">{d.elapsedMs}ms</Typography.Text></span> });
+  });
+
+  if (items.length === 0) {
+    return <Alert message={lang === 'zh' ? '暂无链路数据' : 'No trace data'} type="info" />;
+  }
+
+  return <Timeline items={items} />;
 }
 
 function RoutePreview({ lang }: { lang: Lang }) {
@@ -584,7 +975,7 @@ function RoutePreview({ lang }: { lang: Lang }) {
   );
 }
 
-function Settings({ lang, health }: { lang: Lang; health: string }) {
+function Settings({ lang, health, runtimeMode }: { lang: Lang; health: string; runtimeMode?: RuntimeMode }) {
   return (
     <PageContainer title={tr(lang, 'settings')}>
       <div className="two-col">
@@ -592,7 +983,10 @@ function Settings({ lang, health }: { lang: Lang; health: string }) {
           <Descriptions column={1}>
             <Descriptions.Item label="API Base">/api</Descriptions.Item>
             <Descriptions.Item label={tr(lang, 'connection')}>{healthText(health, lang)}</Descriptions.Item>
-            <Descriptions.Item label={lang === 'zh' ? '数据模式' : 'Data Mode'}>{health === 'ready' ? tr(lang, 'realMode') : tr(lang, 'demoMode')}</Descriptions.Item>
+            <Descriptions.Item label={lang === 'zh' ? '数据模式' : 'Data Mode'}>{runtimeMode?.mode ?? (health === 'ready' ? tr(lang, 'realMode') : tr(lang, 'demoMode'))}</Descriptions.Item>
+            <Descriptions.Item label="proxyMode">{String(runtimeMode?.proxyMode ?? false)}</Descriptions.Item>
+            <Descriptions.Item label="demoEnabled">{String(runtimeMode?.demoEnabled ?? false)}</Descriptions.Item>
+            <Descriptions.Item label="shardCount">{runtimeMode?.shardCount ?? '-'}</Descriptions.Item>
           </Descriptions>
         </ProCard>
         <ProCard title={lang === 'zh' ? '交付验收清单' : 'Acceptance Checklist'}>
@@ -707,13 +1101,104 @@ function EmptyText({ lang }: { lang: Lang }) {
   return <Typography.Text type="secondary">{tr(lang, 'empty')}</Typography.Text>;
 }
 
-function cancelOrder(orderId: number, userId: number, after: () => void, lang: Lang) {
-  Modal.confirm({
-    title: lang === 'zh' ? '取消订单' : 'Cancel Order',
-    content: lang === 'zh' ? '提交后会刷新订单状态，重复点击不会产生重复处理。' : 'The order status will refresh after submission; repeated clicks are handled safely.',
-    onOk: async () => {
-      await api.cancelOrder(orderId, userId, 'console cancel');
-      after();
-    },
-  });
+function formatApiError(error: unknown, lang: Lang) {
+  if (error instanceof ApiError) {
+    const prefix = error.errorCode ? `[${error.errorCode}] ` : `[HTTP ${error.status}] `;
+    return prefix + error.message;
+  }
+  return error instanceof Error ? error.message : (lang === 'zh' ? '未知错误' : 'Unknown error');
+}
+
+function exceptionStatusText(status: number, lang: Lang) {
+  const zh = { 10: '待处理', 20: '处理中', 30: '已解决', 40: '已关闭' } as Record<number, string>;
+  const en = { 10: 'Open', 20: 'In Progress', 30: 'Resolved', 40: 'Closed' } as Record<number, string>;
+  return (lang === 'zh' ? zh : en)[status] ?? String(status);
+}
+
+function prettyJson(value: string) {
+  if (!value) return '{}';
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function ProxyPage({ lang }: { lang: Lang }) {
+  const [pools, setPools] = useState<ProxyPoolsResult>();
+  const [sessions, setSessions] = useState<ProxySessionsResult>();
+  const [decisions, setDecisions] = useState<ProxyDecisionsResult>();
+  const [loading, setLoading] = useState(false);
+
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const [p, s, d] = await Promise.all([
+        api.proxyPools(), api.proxySessions(), api.proxyDecisions(30),
+      ]);
+      setPools(p); setSessions(s); setDecisions(d);
+    } catch (e) { message.error((e as Error).message); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { void reload(); }, []);
+
+  const poolEntries = pools ? Object.entries(pools.pools) : [];
+  const totalMax = poolEntries.reduce((sum, [, v]) => sum + v.max, 0);
+  const totalUsed = pools?.totalActive ?? 0;
+
+  return (
+    <PageContainer title={tr(lang, 'proxy')} extra={<Button type="primary" loading={loading} onClick={reload}>{tr(lang, 'refresh')}</Button>}>
+      <Space direction="vertical" size={16} className="full">
+        <div className="metric-grid">
+          <ProCard><Statistic title={lang === 'zh' ? '会话数' : 'Sessions'} value={sessions?.count ?? '-'} /></ProCard>
+          <ProCard><Statistic title={lang === 'zh' ? '活跃连接' : 'Active Connections'} value={totalUsed} suffix={`/ ${totalMax}`} /></ProCard>
+          <ProCard><Statistic title={lang === 'zh' ? '数据源' : 'Data Sources'} value={poolEntries.length} /></ProCard>
+          <ProCard><Statistic title={lang === 'zh' ? '路由决策' : 'Route Decisions'} value={decisions?.count ?? '-'} /></ProCard>
+        </div>
+
+        <ProCard title={lang === 'zh' ? '连接池状态' : 'Connection Pools'}>
+          <ProTable rowKey="name" search={false} pagination={false}
+            dataSource={poolEntries.map(([name, v]) => ({ name, ...v }))}
+            columns={[
+              { title: lang === 'zh' ? '数据源' : 'Source', dataIndex: 'name', render: (_, r) => <Tag color={r.healthy ? 'green' : 'red'}>{r.name}</Tag> },
+              { title: lang === 'zh' ? '活跃' : 'Active', dataIndex: 'active' },
+              { title: lang === 'zh' ? '空闲' : 'Idle', dataIndex: 'idle' },
+              { title: lang === 'zh' ? '最大' : 'Max', dataIndex: 'max' },
+              { title: lang === 'zh' ? '使用率' : 'Usage', render: (_, r) => <Progress percent={r.max > 0 ? Math.round((r.active / r.max) * 100) : 0} size="small" /> },
+            ]}
+          />
+        </ProCard>
+
+        <ProCard title={lang === 'zh' ? '路由决策日志' : 'Route Decision Log'}>
+          <ProTable rowKey="id" search={false} pagination={{ defaultPageSize: 15, pageSizeOptions: ['10', '20', '50'] }}
+            dataSource={(decisions?.decisions ?? []).map((d, i) => ({ ...d, _key: i }))}
+            columns={[
+              { title: 'SQL', dataIndex: 'sql', ellipsis: true, width: 280 },
+              { title: lang === 'zh' ? '键类型' : 'Key Type', dataIndex: 'keyType', render: (_, r) => <Tag color={r.keyType === 'USER_ID' ? 'blue' : r.keyType === 'PRIMARY_ONLY' ? 'purple' : 'default'}>{r.keyType}</Tag> },
+              { title: lang === 'zh' ? '键值' : 'Key Value', dataIndex: 'keyValue' },
+              { title: lang === 'zh' ? '目标' : 'Target', dataIndex: 'target', render: (_, r) => r.target === 'REJECTED' ? <Tag color="red">{r.target}</Tag> : <Tag color="green">{r.target}</Tag> },
+              { title: lang === 'zh' ? '状态' : 'Status', dataIndex: 'status', render: (_, r) => <Tag color={r.status === 'OK' ? 'green' : 'red'}>{r.status}</Tag> },
+              { title: lang === 'zh' ? '耗时' : 'Time', dataIndex: 'elapsedMs', render: (_, r) => `${r.elapsedMs}ms` },
+            ]}
+          />
+        </ProCard>
+
+        {sessions && sessions.count > 0 && (
+          <ProCard title={lang === 'zh' ? '活跃会话' : 'Active Sessions'}>
+            <ProTable rowKey="sessionId" search={false} pagination={false}
+              dataSource={sessions.sessions.map((s) => ({ sessionId: String(s.sessionId ?? '-'), clientAddr: String(s.clientAddr ?? '-'), inTransaction: Boolean(s.inTransaction), boundShardId: Number(s.boundShardId ?? -1), hasBackendConnection: Boolean(s.hasBackendConnection) }))}
+              columns={[
+                { title: 'Session ID', dataIndex: 'sessionId', ellipsis: true },
+                { title: lang === 'zh' ? '来源' : 'Client', dataIndex: 'clientAddr' },
+                { title: lang === 'zh' ? '事务中' : 'In TX', dataIndex: 'inTransaction', render: (_, r) => r.inTransaction ? <Tag color="orange">YES</Tag> : <Tag>NO</Tag> },
+                { title: lang === 'zh' ? '绑定分片' : 'Bound Shard', dataIndex: 'boundShardId', render: (_, r) => r.boundShardId >= 0 ? <Tag color="blue">shard_{r.boundShardId}</Tag> : <Tag>-</Tag> },
+                { title: lang === 'zh' ? '后端连接' : 'Backend', dataIndex: 'hasBackendConnection', render: (_, r) => r.hasBackendConnection ? <Tag color="green">YES</Tag> : <Tag>NO</Tag> },
+              ]}
+            />
+          </ProCard>
+        )}
+      </Space>
+    </PageContainer>
+  );
 }

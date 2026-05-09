@@ -43,7 +43,8 @@ class MiniProxyServerTest {
         return new ProxyFrontendHandler(config,
                 new SqlParserImpl(),
                 new SqlRouterImpl(config.shardCount(), config.readAfterWriteWindowMs()),
-                pool);
+                pool,
+                new RouteDecisionLog(100));
     }
 
     @Test
@@ -132,7 +133,7 @@ class MiniProxyServerTest {
 
     @Test
     void shouldBindToPort() throws Exception {
-        ProxyConfig config = new ProxyConfig(13307, "proxy", "proxy123", "root", "root123", 16, 5000, 600_000, 3000, 2, 5000, "127.0.0.1", 3307);
+        ProxyConfig config = new ProxyConfig(13307, "proxy", "proxy123", "root", "root123", 16, 5000, 600_000, 3000, 2, 5000, "127.0.0.1", 4407);
         MiniProxyServer server = new MiniProxyServer(config);
 
         CountDownLatch latch = new CountDownLatch(1);
