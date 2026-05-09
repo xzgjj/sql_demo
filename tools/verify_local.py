@@ -321,6 +321,30 @@ def check_proxy_sources():
     return True, f"{len(PROXY_EXPECTED_SOURCES)} proxy source files ok"
 
 
+def check_proxy_runtime_contract():
+    checks = []
+    handshake = ROOT / "mini-proxy" / "src" / "main" / "java" / "com" / "minidb" / "proxy" / "protocol" / "HandshakeV10.java"
+    backend_auth = ROOT / "mini-proxy" / "src" / "main" / "java" / "com" / "minidb" / "proxy" / "BackendAuthHandler.java"
+    proxy_profile = ROOT / "order-api" / "src" / "main" / "resources" / "application-proxy.yml"
+    compose = ROOT / "docker-compose.yml"
+
+    handshake_text = handshake.read_text(encoding="utf-8") if handshake.exists() else ""
+    backend_auth_text = backend_auth.read_text(encoding="utf-8") if backend_auth.exists() else ""
+    proxy_profile_text = proxy_profile.read_text(encoding="utf-8") if proxy_profile.exists() else ""
+    compose_text = compose.read_text(encoding="utf-8") if compose.exists() else ""
+
+    checks.append(("handshake uses NUL-terminated username parser", "readNullTerminatedString(payload)" in handshake_text))
+    checks.append(("backend auth conditionally sends database", "CLIENT_CONNECT_WITH_DB" in backend_auth_text and "database.isBlank()" in backend_auth_text))
+    checks.append(("order-api proxy profile exists", proxy_profile.exists()))
+    checks.append(("proxy profile disables server prepared statements", "useServerPrepStmts=false" in proxy_profile_text))
+    checks.append(("docker MySQL 8.4 native auth flag is current", "--default-authentication-plugin" not in compose_text))
+
+    failed = [name for name, ok in checks if not ok]
+    if failed:
+        return False, "proxy runtime contract failed: " + ", ".join(failed)
+    return True, "proxy runtime contract ok"
+
+
 ORDER_EXPECTED_SOURCES = [
     "OrderApiApplication.java",
     "OrderApiModule.java",
@@ -579,6 +603,9 @@ def main():
 
     ok, detail = check_proxy_sources()
     checks.append({"name": "proxy:source-files", "ok": ok, "detail": detail})
+
+    ok, detail = check_proxy_runtime_contract()
+    checks.append({"name": "proxy:runtime-contract", "ok": ok, "detail": detail})
 
     ok, detail = check_order_sources()
     checks.append({"name": "order:source-files", "ok": ok, "detail": detail})

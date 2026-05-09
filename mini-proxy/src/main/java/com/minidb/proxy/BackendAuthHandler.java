@@ -21,12 +21,18 @@ public class BackendAuthHandler extends ChannelInboundHandlerAdapter {
 
     private final String username;
     private final String password;
+    private final String database;
     private final CompletableFuture<Boolean> authFuture;
     private boolean authStarted;
 
     public BackendAuthHandler(String username, String password) {
+        this(username, password, "");
+    }
+
+    public BackendAuthHandler(String username, String password, String database) {
         this.username = username;
         this.password = password;
+        this.database = database == null ? "" : database;
         this.authFuture = new CompletableFuture<>();
     }
 
@@ -135,8 +141,9 @@ public class BackendAuthHandler extends ChannelInboundHandlerAdapter {
         try {
             // Capability flags (4 bytes) — CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_PLUGIN_AUTH
             int caps = 0x0000_0200 | 0x0000_8000 | 0x0008_0000;
-            // Also: CLIENT_CONNECT_WITH_DB
-            caps |= 0x0000_0008;
+            if (!database.isBlank()) {
+                caps |= 0x0000_0008; // CLIENT_CONNECT_WITH_DB
+            }
 
             writeInt4(buf, caps);
 
@@ -156,6 +163,11 @@ public class BackendAuthHandler extends ChannelInboundHandlerAdapter {
             // Auth response length + data
             buf.write(authResponse.length);
             buf.write(authResponse);
+
+            if (!database.isBlank()) {
+                buf.writeBytes(database.getBytes(StandardCharsets.UTF_8));
+                buf.write(0);
+            }
 
             // Auth plugin name
             buf.writeBytes("mysql_native_password".getBytes(StandardCharsets.UTF_8));

@@ -207,7 +207,7 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
 
         // Perform MySQL handshake + auth with backend
         BackendAuthHandler authHandler = new BackendAuthHandler(
-                cfg.username(), cfg.password());
+                cfg.username(), cfg.password(), cfg.database());
         channel.pipeline().addLast("backend-auth", authHandler);
 
         try {
@@ -237,9 +237,13 @@ public class BackendConnectionPoolImpl implements BackendConnectionPool {
         return b.connect(host, port);
     }
 
-    public record BackendServerConfig(String host, int port, String username, String password) {
+    public record BackendServerConfig(String host, int port, String username, String password, String database) {
         public BackendServerConfig(String host, int port) {
-            this(host, port, "root", "root123");
+            this(host, port, "root", "root123", "minidb");
+        }
+
+        public BackendServerConfig(String host, int port, String username, String password) {
+            this(host, port, username, password, "minidb");
         }
     }
 }

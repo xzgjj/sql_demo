@@ -8,7 +8,7 @@ services:
       MYSQL_DATABASE: minidb
     ports:
       - "3307:3306"
-    command: --default-authentication-plugin=mysql_native_password
+    command: --mysql-native-password=ON
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
@@ -23,7 +23,7 @@ services:
       MYSQL_DATABASE: minidb
     ports:
       - "3308:3306"
-    command: --default-authentication-plugin=mysql_native_password
+    command: --mysql-native-password=ON
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
@@ -38,7 +38,7 @@ services:
       MYSQL_DATABASE: minidb_shard_0
     ports:
       - "3309:3306"
-    command: --default-authentication-plugin=mysql_native_password
+    command: --mysql-native-password=ON
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
@@ -53,7 +53,7 @@ services:
       MYSQL_DATABASE: minidb_shard_1
     ports:
       - "3310:3306"
-    command: --default-authentication-plugin=mysql_native_password
+    command: --mysql-native-password=ON
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
@@ -68,7 +68,7 @@ services:
       MYSQL_DATABASE: minidb_shard_2
     ports:
       - "3311:3306"
-    command: --default-authentication-plugin=mysql_native_password
+    command: --mysql-native-password=ON
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
@@ -83,7 +83,7 @@ services:
       MYSQL_DATABASE: minidb_shard_3
     ports:
       - "3312:3306"
-    command: --default-authentication-plugin=mysql_native_password
+    command: --mysql-native-password=ON
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s

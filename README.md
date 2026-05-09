@@ -233,6 +233,7 @@ mvn -pl order-api flyway:info
 | mini-proxy | `127.0.0.1:3306` |
 
 加载演示订单：
+OpenAPI/接口文档：http://localhost:8080/swagger-ui.html
 
 ```bash
 curl -X POST http://127.0.0.1:8080/api/console/demo/load ^
@@ -251,6 +252,13 @@ MINIDB_PROXY_PORT=3306
 MINIDB_SHARD_COUNT=4
 MINIDB_DEFAULT_ISOLATION=REPEATABLE_READ
 MINIDB_CONSOLE_DEMO_ENABLED=true
+MINIDB_BACKEND_HOST=127.0.0.1
+MINIDB_BACKEND_PORT_BASE=3307
+MINIDB_BACKEND_USERNAME=root
+MINIDB_BACKEND_PASSWORD=
+MINIDB_PRIMARY_DATABASE=minidb
+MINIDB_REPLICA_DATABASE=minidb
+MINIDB_SHARD_DATABASE_PREFIX=minidb_shard_
 ```
 
 所有真实密钥、数据库密码和外部服务凭证不得提交到仓库。
@@ -318,6 +326,51 @@ sql_demo/
 - 缺少分片键的高风险查询必须拒绝。
 - 数据库结构变更必须通过 Flyway 迁移脚本执行。
 
+## 当前加固验收标准
+
+本轮项目审查后的统一加固目标：
+
+- MySQL 协议代理必须按官方协议处理客户端 `HandshakeResponse41`：用户名为 `NUL` 结尾字符串，认证响应按 capability 读取，数据库名和认证插件名也按 `NUL` 结尾字段解析。
+- MySQL 协议代理必须按官方协议发送后端 `COM_QUERY`：包头为 `3-byte payload_length + 1-byte sequence_id`，命令阶段序号从 `0` 开始，payload 首字节为 `0x03`，后接 SQL 文本。
+- `mini-proxy` 到后端 MySQL 必须显式指定后端库名，默认 `PRIMARY/REPLICA=minidb`、分片库名前缀 `minidb_shard_`，可通过 `MINIDB_PRIMARY_DATABASE`、`MINIDB_REPLICA_DATABASE`、`MINIDB_SHARD_DATABASE_PREFIX` 覆盖。
+- `mini-proxy` 对访问分片表但缺少 `user_id`、`order_no` 或 `payment_no` 的读写 SQL 必须返回 `MISSING_SHARD_KEY`，只允许无表查询和 PRIMARY-only 控制表走默认路由。
+- `order-api` 默认保持单库直连模式；如启用 `spring.profiles.active=proxy`，必须清楚知道控制台全局聚合、演示数据装载、仅按 `order_id` 的链路追踪不属于 proxy 分片安全查询，系统会拒绝这些查询。
+- proxy 实验模式下，订单详情按 `order_id` 查询必须携带 `X-User-Id`；按 `order_no` 查询可通过 `order_route` 路由到单分片。前端订单列表进入详情时必须传递当前 `user_id`。
+- 所有真实写接口必须消费 `Idempotency-Key`，业务失败要把幂等记录从 `PROCESSING` 标记为 `FAILED`，相同请求允许重试，不同请求必须拒绝。
+- 履约发货必须检查任务状态、认领人、订单原状态和库存影响行数，任一条件不满足不得继续写订单、发货单或 outbox。
+- `exception_tickets.detail`、`outbox_events.payload`、`idempotency_records.response_body` 必须写入合法 JSON 文本。
+- Outbox 处理必须先用条件更新领取事件，再分发，避免多处理器重复处理同一条 `NEW` 事件。
+
+对标依据：
+
+- MySQL 官方协议文档：`HandshakeResponse41`、Command Phase、`COM_QUERY`。
+- MySQL 8.4 官方认证文档：`mysql_native_password` 在 MySQL 8.4 默认禁用，参考 docker 环境如需 native auth 必须使用 `--mysql-native-password=ON`。
+- ShardingSphere 路由约束：SQL 缺少分片条件时无法单分片路由。本项目选择拒绝高风险查询，而不是自动广播或跨分片 Join。
+
+### 运行模式边界
+
+本项目当前明确区分两种运行模式：
+
+| 模式 | 用途 | 数据源 | 查询边界 |
+| --- | --- | --- | --- |
+| 单库直连模式（默认） | 订单闭环、控制台聚合、演示数据、H2/本地 MySQL 快速验证 | `application.yml` 中的 MySQL | 允许控制台全局聚合和按 `order_id` 查询 |
+| proxy 实验模式 | 验证 MySQL 协议、分片键路由、缺键拒绝和事务绑定 | `application-proxy.yml`，连接 `mini-proxy` | 分片表必须携带 `user_id`、`order_no` 或 `payment_no` |
+
+proxy 实验模式启动参考：
+
+```bash
+# 先启动或准备你自己的 MySQL 后端，再启动 mini-proxy
+set MINIDB_BACKEND_HOST=127.0.0.1
+set MINIDB_BACKEND_PORT_BASE=3307
+set MINIDB_PRIMARY_DATABASE=minidb
+set MINIDB_REPLICA_DATABASE=minidb
+set MINIDB_SHARD_DATABASE_PREFIX=minidb_shard_
+mvn -pl mini-proxy exec:java -Dexec.mainClass=com.minidb.proxy.MiniProxyServer
+
+# order-api 经 proxy 访问，仅用于分片实验接口验证
+mvn -f order-api/pom.xml spring-boot:run -Dspring-boot.run.profiles=proxy
+```
+
 
 
 本轮验收命令：
@@ -325,6 +378,8 @@ sql_demo/
 ```bash
 mvn -pl mini-proxy test
 mvn -pl order-api test
+npm --prefix web-console run lint
+npm --prefix web-console run test
 python tools/verify_local.py --json
 ```
 

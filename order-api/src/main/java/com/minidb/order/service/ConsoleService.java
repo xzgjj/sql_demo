@@ -36,13 +36,15 @@ public class ConsoleService {
     private final String mockSignSecret;
     private final int shardCount;
     private final boolean demoEnabled;
+    private final boolean proxyMode;
 
     public ConsoleService(JdbcTemplate jdbc, OrderService orderService, PaymentService paymentService,
                           OutboxProcessor outboxProcessor, FulfillmentService fulfillmentService,
                           IdempotencyService idempotencyService, ObjectMapper objectMapper,
                           @Value("${minidb.payment.mock-sign-secret}") String mockSignSecret,
                           @Value("${minidb.order.shard-count:4}") int shardCount,
-                          @Value("${minidb.console.demo-enabled:false}") boolean demoEnabled) {
+                          @Value("${minidb.console.demo-enabled:false}") boolean demoEnabled,
+                          @Value("${minidb.order.proxy-mode:false}") boolean proxyMode) {
         this.jdbc = jdbc;
         this.orderService = orderService;
         this.paymentService = paymentService;
@@ -53,9 +55,11 @@ public class ConsoleService {
         this.mockSignSecret = mockSignSecret;
         this.shardCount = shardCount;
         this.demoEnabled = demoEnabled;
+        this.proxyMode = proxyMode;
     }
 
     public DashboardSummary dashboardSummary() {
+        ensureSingleDatabaseConsoleQuery("dashboard summary");
         long ordersToday = count("SELECT COUNT(*) FROM orders WHERE created_at >= CURRENT_DATE");
         long paidSuccess = count("SELECT COUNT(*) FROM payments WHERE status = 20");
         long fulfillmentTotal = count("SELECT COUNT(*) FROM fulfillment_tasks");
@@ -83,6 +87,7 @@ public class ConsoleService {
     }
 
     public DemoLoadResult loadDemoData() {
+        ensureSingleDatabaseConsoleQuery("demo data loading");
         if (!demoEnabled) {
             throw new BusinessException("DEMO_LOAD_DISABLED", "Demo loading is disabled");
         }
@@ -116,6 +121,7 @@ public class ConsoleService {
     }
 
     public DemoLoadResult loadDemoData(String idempotencyKey) {
+        ensureSingleDatabaseConsoleQuery("demo data loading");
         String requestBody = toJson(Map.of("action", "console-demo-load"));
         String cached = idempotencyService.tryAcquire(idempotencyKey, "SYSTEM", 0L, requestBody);
         if (cached != null) {
@@ -136,6 +142,7 @@ public class ConsoleService {
     }
 
     public OrderTrace traceOrder(long orderId) {
+        ensureSingleDatabaseConsoleQuery("order trace by order_id");
         var order = jdbc.query(
                 "SELECT id, order_no, user_id, status, total_amount, paid_amount, created_at FROM orders WHERE id = ?",
                 rs -> {
@@ -339,6 +346,14 @@ public class ConsoleService {
     private long count(String sql) {
         Long value = jdbc.queryForObject(sql, Long.class);
         return value == null ? 0 : value;
+    }
+
+    private void ensureSingleDatabaseConsoleQuery(String operation) {
+        if (proxyMode) {
+            throw new BusinessException("PROXY_MODE_UNSUPPORTED_QUERY",
+                    operation + " requires a single-database connection. "
+                    + "Use direct mode for console-wide aggregation, or query by user_id/order_no/payment_no.");
+        }
     }
 
     private String toJson(Object value) {

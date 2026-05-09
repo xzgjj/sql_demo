@@ -93,6 +93,13 @@ class SqlParserImplTest {
     }
 
     @Test
+    void shouldTreatSetAutocommitOffAsTransactionCommand() {
+        ParsedSql result = parser.parse("SET autocommit=0");
+        assertEquals(SqlType.SET, result.type());
+        assertTrue(result.isTxCommand());
+    }
+
+    @Test
     void shouldHandleInvalidSqlGracefully() {
         ParsedSql result = parser.parse("GARBAGE SYNTAX !!!");
         assertEquals(SqlType.OTHER, result.type());

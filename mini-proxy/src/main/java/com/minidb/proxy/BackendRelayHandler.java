@@ -24,6 +24,10 @@ public class BackendRelayHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        if (connection.shouldSuppressResponse()) {
+            ReferenceCountUtil.release(msg);
+            return;
+        }
         Channel clientChannel = connection.clientChannel();
         if (clientChannel != null && clientChannel.isActive()) {
             clientChannel.writeAndFlush(msg, clientChannel.voidPromise());

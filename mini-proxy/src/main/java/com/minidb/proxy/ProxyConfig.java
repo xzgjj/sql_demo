@@ -13,23 +13,48 @@ public record ProxyConfig(
         int shardCount,
         int backendConnectTimeoutMs,
         String backendHost,
-        int backendPortBase
+        int backendPortBase,
+        String primaryDatabase,
+        String replicaDatabase,
+        String shardDatabasePrefix
 ) {
+    public ProxyConfig(int listenPort,
+                       String proxyUsername,
+                       String proxyPassword,
+                       String backendUsername,
+                       String backendPassword,
+                       int backendPoolMaxSize,
+                       long borrowTimeoutMs,
+                       long idleTimeoutMs,
+                       long readAfterWriteWindowMs,
+                       int shardCount,
+                       int backendConnectTimeoutMs,
+                       String backendHost,
+                       int backendPortBase) {
+        this(listenPort, proxyUsername, proxyPassword, backendUsername, backendPassword,
+                backendPoolMaxSize, borrowTimeoutMs, idleTimeoutMs, readAfterWriteWindowMs,
+                shardCount, backendConnectTimeoutMs, backendHost, backendPortBase,
+                "minidb", "minidb", "minidb_shard_");
+    }
+
     public static ProxyConfig defaults() {
         return new ProxyConfig(
-                3306,
-                "proxy",
-                "proxy123",
-                "root",
-                "root123",
-                16,
-                5000,
-                600_000,
-                3000,
-                4,
-                5000,
-                "127.0.0.1",
-                3307
+                intSetting("MINIDB_PROXY_PORT", 3306),
+                setting("MINIDB_PROXY_USERNAME", "proxy"),
+                setting("MINIDB_PROXY_PASSWORD", "proxy123"),
+                setting("MINIDB_BACKEND_USERNAME", "root"),
+                setting("MINIDB_BACKEND_PASSWORD", "root123"),
+                intSetting("MINIDB_BACKEND_POOL_MAX_SIZE", 16),
+                longSetting("MINIDB_BACKEND_BORROW_TIMEOUT_MS", 5000),
+                longSetting("MINIDB_BACKEND_IDLE_TIMEOUT_MS", 600_000),
+                longSetting("MINIDB_READ_AFTER_WRITE_WINDOW_MS", 3000),
+                intSetting("MINIDB_SHARD_COUNT", 4),
+                intSetting("MINIDB_BACKEND_CONNECT_TIMEOUT_MS", 5000),
+                setting("MINIDB_BACKEND_HOST", "127.0.0.1"),
+                intSetting("MINIDB_BACKEND_PORT_BASE", 3307),
+                setting("MINIDB_PRIMARY_DATABASE", "minidb"),
+                setting("MINIDB_REPLICA_DATABASE", "minidb"),
+                setting("MINIDB_SHARD_DATABASE_PREFIX", "minidb_shard_")
         );
     }
 
@@ -42,6 +67,7 @@ public record ProxyConfig(
 
     /** Host:port for shard N */
     public int shardPort(int index) { return backendPortBase + 2 + index; }
+    public String shardDatabase(int index) { return shardDatabasePrefix + index; }
 
     public static class BackendServer {
         public final String host;
@@ -55,5 +81,20 @@ public record ProxyConfig(
             this.username = username;
             this.password = password;
         }
+    }
+
+    private static String setting(String name, String fallback) {
+        String property = System.getProperty(name);
+        if (property != null && !property.isBlank()) return property;
+        String env = System.getenv(name);
+        return env == null || env.isBlank() ? fallback : env;
+    }
+
+    private static int intSetting(String name, int fallback) {
+        return Integer.parseInt(setting(name, Integer.toString(fallback)));
+    }
+
+    private static long longSetting(String name, long fallback) {
+        return Long.parseLong(setting(name, Long.toString(fallback)));
     }
 }

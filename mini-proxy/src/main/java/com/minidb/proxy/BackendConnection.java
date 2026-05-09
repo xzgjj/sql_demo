@@ -6,6 +6,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * A connection to a backend MySQL instance.
@@ -19,6 +20,7 @@ public class BackendConnection {
     private volatile long lastUsedAt;
     private volatile boolean healthy;
     private volatile Channel clientChannel;
+    private final AtomicInteger suppressedResponses = new AtomicInteger();
 
     public BackendConnection(DataSourceId dataSourceId, Channel channel) {
         this.dataSourceId = dataSourceId;
@@ -50,6 +52,14 @@ public class BackendConnection {
     }
 
     public Channel clientChannel() { return clientChannel; }
+
+    public void suppressNextResponse() {
+        suppressedResponses.incrementAndGet();
+    }
+
+    public boolean shouldSuppressResponse() {
+        return suppressedResponses.getAndUpdate(value -> value > 0 ? value - 1 : 0) > 0;
+    }
 
     public ChannelFuture writeComQuery(String sql) {
         byte[] sqlBytes = sql.getBytes(StandardCharsets.UTF_8);

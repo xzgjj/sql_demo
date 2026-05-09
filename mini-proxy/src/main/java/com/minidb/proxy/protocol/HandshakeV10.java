@@ -97,33 +97,36 @@ public final class HandshakeV10 {
         byte characterSet = payload.readByte();
         payload.skipBytes(23); // reserved zeroes
 
-        int userLen = payload.readUnsignedByte();
-        String username = payload.readCharSequence(userLen, StandardCharsets.UTF_8).toString();
+        String username = readNullTerminatedString(payload);
 
         byte[] authResponse;
-        if ((capabilityFlags & CapabilityFlags.CLIENT_SECURE_CONNECTION) != 0) {
+        if ((capabilityFlags & CapabilityFlags.CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA) != 0) {
+            long length = readLengthEncodedInteger(payload);
+            if (length > payload.readableBytes()) {
+                throw new IllegalArgumentException("Auth response length exceeds payload: " + length);
+            }
+            authResponse = new byte[(int) length];
+            payload.readBytes(authResponse);
+        } else if ((capabilityFlags & CapabilityFlags.CLIENT_SECURE_CONNECTION) != 0) {
             authResponse = new byte[payload.readUnsignedByte()];
             payload.readBytes(authResponse);
         } else {
             int len = indexOfNullByte(payload);
             authResponse = new byte[len];
             payload.readBytes(authResponse);
+            if (payload.readableBytes() > 0) {
+                payload.skipBytes(1);
+            }
         }
 
         String database = "";
         if ((capabilityFlags & CapabilityFlags.CLIENT_CONNECT_WITH_DB) != 0) {
-            database = payload.readCharSequence(payload.readableBytes(), StandardCharsets.UTF_8).toString();
-        } else if (payload.readableBytes() > 0 && payload.getByte(payload.readerIndex()) != 0) {
-            int nullPos = indexOfNullByte(payload);
-            if (nullPos > 0) {
-                payload.skipBytes(nullPos);
-            }
+            database = readNullTerminatedString(payload);
         }
 
         String authPluginName = "";
-        if (payload.readableBytes() > 0) {
-            payload.skipBytes(1); // skip null
-            authPluginName = payload.readCharSequence(payload.readableBytes(), StandardCharsets.UTF_8).toString();
+        if ((capabilityFlags & CapabilityFlags.CLIENT_PLUGIN_AUTH) != 0 && payload.readableBytes() > 0) {
+            authPluginName = readNullTerminatedString(payload);
         }
 
         return new HandshakeResponse41(capabilityFlags, maxPacketSize, characterSet,
@@ -183,5 +186,28 @@ public final class HandshakeV10 {
             }
         }
         return buf.readableBytes();
+    }
+
+    private static String readNullTerminatedString(ByteBuf payload) {
+        int len = indexOfNullByte(payload);
+        String value = payload.readCharSequence(len, StandardCharsets.UTF_8).toString();
+        if (payload.readableBytes() > 0) {
+            payload.skipBytes(1);
+        }
+        return value;
+    }
+
+    private static long readLengthEncodedInteger(ByteBuf payload) {
+        int first = payload.readUnsignedByte();
+        if (first < 0xFB) return first;
+        if (first == 0xFC) return payload.readUnsignedShortLE();
+        if (first == 0xFD) {
+            int b0 = payload.readUnsignedByte();
+            int b1 = payload.readUnsignedByte();
+            int b2 = payload.readUnsignedByte();
+            return b0 | (b1 << 8) | (b2 << 16);
+        }
+        if (first == 0xFE) return payload.readLongLE();
+        throw new IllegalArgumentException("Unsupported NULL length-encoded integer");
     }
 }

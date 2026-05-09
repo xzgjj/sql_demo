@@ -332,7 +332,7 @@ function Orders({ lang, openTrace }: { lang: Lang; openTrace: (orderId: number) 
     { title: lang === 'zh' ? '明细数' : 'Items', dataIndex: 'itemCount' },
     { title: lang === 'zh' ? '创建时间' : 'Created At', dataIndex: 'createdAt' },
     { title: lang === 'zh' ? '操作' : 'Action', valueType: 'option', render: (_, r) => [
-      <Button key="detail" onClick={async () => setSelected(await api.order(r.orderId))}>{tr(lang, 'details')}</Button>,
+      <Button key="detail" onClick={async () => setSelected(await api.order(r.orderId, userId))}>{tr(lang, 'details')}</Button>,
       <Button key="trace" onClick={() => openTrace(r.orderId)}>{lang === 'zh' ? '数据库链路' : 'Trace'}</Button>,
       r.status === 10 && <Button key="cancel" danger onClick={() => cancelOrder(r.orderId, userId, reload, lang)}>{tr(lang, 'cancel')}</Button>,
     ] },

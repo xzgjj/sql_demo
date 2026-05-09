@@ -230,12 +230,12 @@ class MiniProxyServerTest {
         buf.writeIntLE(0x1000000);
         buf.writeByte(0x21);
         buf.writeZero(23);
-        buf.writeByte(username.length());
         buf.writeBytes(username.getBytes(StandardCharsets.UTF_8));
+        buf.writeByte(0x00);
         buf.writeByte(authResponse.length);
         buf.writeBytes(authResponse);
-        buf.writeByte(0x00);
         buf.writeBytes("mysql_native_password".getBytes(StandardCharsets.UTF_8));
+        buf.writeByte(0x00);
         return buf;
     }
 

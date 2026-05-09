@@ -38,7 +38,7 @@ public class MiniProxyServer {
         RouteTableLookup routeTableLookup = new RouteTableLookup(
                 config.backendHost(), config.primaryPort(),
                 config.backendUsername(), config.backendPassword(),
-                "minidb", config.backendConnectTimeoutMs());
+                config.primaryDatabase(), config.backendConnectTimeoutMs());
 
         // Shared components
         SqlParserImpl sqlParser = new SqlParserImpl();
@@ -50,17 +50,19 @@ public class MiniProxyServer {
         // Register backend data sources from config (with credentials for auth)
         var backendCfg = new BackendConnectionPoolImpl.BackendServerConfig(
                 config.backendHost(), config.primaryPort(),
-                config.backendUsername(), config.backendPassword());
+                config.backendUsername(), config.backendPassword(), config.primaryDatabase());
         pool.registerDataSource(DataSourceId.PRIMARY, backendCfg, config.backendPoolMaxSize());
         pool.registerDataSource(DataSourceId.REPLICA,
                 new BackendConnectionPoolImpl.BackendServerConfig(
                         config.backendHost(), config.replicaPort(),
-                        config.backendUsername(), config.backendPassword()), 8);
+                        config.backendUsername(), config.backendPassword(),
+                        config.replicaDatabase()), 8);
         for (int i = 0; i < config.shardCount(); i++) {
             pool.registerDataSource(DataSourceId.shard(i),
                     new BackendConnectionPoolImpl.BackendServerConfig(
                             config.backendHost(), config.shardPort(i),
-                            config.backendUsername(), config.backendPassword()), 8);
+                            config.backendUsername(), config.backendPassword(),
+                            config.shardDatabase(i)), 8);
         }
 
         ServerBootstrap b = new ServerBootstrap();

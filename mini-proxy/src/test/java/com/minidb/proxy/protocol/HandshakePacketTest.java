@@ -100,16 +100,16 @@ class HandshakePacketTest {
         payload.writeIntLE(0x1000000); // max packet 16M
         payload.writeByte(0x21);       // utf8mb4
         payload.writeZero(23);         // reserved
-        payload.writeByte(5);          // username length
         payload.writeBytes("proxy".getBytes(StandardCharsets.UTF_8));
+        payload.writeByte(0x00);       // username NUL terminator
 
         byte[] authResponse = new byte[20];
         new java.util.Random(42).nextBytes(authResponse);
         payload.writeByte(20);          // auth response length
         payload.writeBytes(authResponse);
 
-        payload.writeByte(0x00);        // null terminator
         payload.writeBytes("mysql_native_password".getBytes(StandardCharsets.UTF_8));
+        payload.writeByte(0x00);        // plugin NUL terminator
 
         HandshakeResponse41 resp = HandshakeV10.parseResponse(payload);
         assertEquals("proxy", resp.username());

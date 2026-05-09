@@ -157,8 +157,10 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             return;
         }
 
+        boolean needsBackendBegin = false;
         if (session.inTransaction() && session.boundConnection() == null) {
             session.bind(plan.shardId() != null ? plan.shardId() : -1, backendConn);
+            needsBackendBegin = true;
             log.debug("Session {} bound to shard_{}", session.sessionId(), session.boundShardId());
         } else if (!session.inTransaction()) {
             session.setAutoConnection(backendConn);
@@ -169,22 +171,44 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         }
 
         backendConn.setClientChannel(ctx.channel());
-        backendConn.writeComQuery(sql).addListener(future -> {
+        if (needsBackendBegin) {
+            backendConn.suppressNextResponse();
+            backendConn.writeComQuery("BEGIN").addListener(beginFuture -> {
+                if (!beginFuture.isSuccess()) {
+                    handleBackendWriteFailure(ctx, session, backendConn, beginFuture.cause());
+                    return;
+                }
+                backendConn.writeComQuery(sql).addListener(queryFuture ->
+                        handleBackendQueryWriteResult(ctx, session, backendConn, queryFuture));
+            });
+            return;
+        }
+        backendConn.writeComQuery(sql).addListener(future ->
+                handleBackendQueryWriteResult(ctx, session, backendConn, future));
+    }
+
+    private void handleBackendQueryWriteResult(ChannelHandlerContext ctx, ProxySession session,
+                                               BackendConnection backendConn,
+                                               io.netty.util.concurrent.Future<? super Void> future) {
             if (!future.isSuccess()) {
-                log.error("Backend write failed to {}", backendConn.dataSourceId().name(), future.cause());
-                pool.invalidate(backendConn);
-                if (!session.inTransaction()) session.clearAutoConnection();
-                ctx.writeAndFlush(ResponsePackets.err((byte) 1, 2006,
-                        "MySQL server has gone away"));
+                handleBackendWriteFailure(ctx, session, backendConn, future.cause());
             }
             // Response relayed by BackendRelayHandler — no synthetic OK needed
-        });
+    }
+
+    private void handleBackendWriteFailure(ChannelHandlerContext ctx, ProxySession session,
+                                           BackendConnection backendConn, Throwable cause) {
+        log.error("Backend write failed to {}", backendConn.dataSourceId().name(), cause);
+        pool.invalidate(backendConn);
+        if (!session.inTransaction()) session.clearAutoConnection();
+        ctx.writeAndFlush(ResponsePackets.err((byte) 1, 2006,
+                "MySQL server has gone away"));
     }
 
     private void handleTxCommand(ChannelHandlerContext ctx, ProxySession session, ParsedSql sql) {
         SqlType type = sql.type();
 
-        if (type == SqlType.BEGIN) {
+        if (type == SqlType.BEGIN || isSetAutocommitOff(sql.originalSql())) {
             // Release auto connection before starting transaction
             releaseAutoConnection(session);
             session.beginTransaction();
@@ -222,6 +246,13 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             // SET/SHOW/OTHER inside transaction or standalone
             ctx.writeAndFlush(ResponsePackets.ok((byte) 1));
         }
+    }
+
+    private boolean isSetAutocommitOff(String sql) {
+        if (sql == null) return false;
+        String normalized = sql.trim().replaceAll("\\s+", " ").toUpperCase();
+        return normalized.equals("SET AUTOCOMMIT=0")
+                || normalized.equals("SET AUTOCOMMIT = 0");
     }
 
     private void releaseAutoConnection(ProxySession session) {

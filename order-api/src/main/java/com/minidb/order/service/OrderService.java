@@ -31,15 +31,18 @@ public class OrderService {
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
     private final int paymentTimeoutMinutes;
+    private final boolean proxyMode;
 
     public OrderService(JdbcTemplate jdbc, InventoryService inventoryService,
                         IdempotencyService idempotencyService, ObjectMapper objectMapper,
-                        @Value("${minidb.order.payment-timeout-minutes:30}") int paymentTimeoutMinutes) {
+                        @Value("${minidb.order.payment-timeout-minutes:30}") int paymentTimeoutMinutes,
+                        @Value("${minidb.order.proxy-mode:false}") boolean proxyMode) {
         this.jdbc = jdbc;
         this.inventoryService = inventoryService;
         this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
         this.paymentTimeoutMinutes = paymentTimeoutMinutes;
+        this.proxyMode = proxyMode;
     }
 
     @Transactional
@@ -121,6 +124,10 @@ public class OrderService {
 
     @Transactional
     public void cancelOrder(Long orderId, String reason, String idempotencyKey, Long operatorId) {
+        if (proxyMode && (operatorId == null || operatorId <= 0)) {
+            throw new BusinessException("SHARD_KEY_REQUIRED",
+                    "user_id is required to cancel orders through mini-proxy");
+        }
         String reqJson;
         try { reqJson = objectMapper.writeValueAsString(Map.of("orderId", orderId, "reason", reason)); }
         catch (Exception e) { throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize cancel request"); }
@@ -128,28 +135,36 @@ public class OrderService {
         if (cached != null) return;
 
         try {
-            var order = jdbc.query("SELECT order_no, user_id, status, version FROM orders WHERE id = ?",
+            var order = proxyMode
+                ? jdbc.query("SELECT order_no, user_id, status, version FROM orders WHERE id = ? AND user_id = ?",
+                    rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
+                        return new Object[]{rs.getString("order_no"), rs.getLong("user_id"), rs.getInt("status"), rs.getInt("version")}; },
+                    orderId, operatorId)
+                : jdbc.query("SELECT order_no, user_id, status, version FROM orders WHERE id = ?",
                 rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
                     return new Object[]{rs.getString("order_no"), rs.getLong("user_id"), rs.getInt("status"), rs.getInt("version")}; },
                 orderId);
             String orderNo = (String) order[0];
+            long userId = (long) order[1];
             int currentStatus = (int) order[2];
 
             if (currentStatus == OrderStatus.PENDING_PAYMENT.getCode()) {
-                var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ?",
-                    (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo), orderId);
+                var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ? AND user_id = ?",
+                    (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo),
+                    orderId, userId);
                 inventoryService.releaseBatch(items);
-                int affected = jdbc.update("UPDATE orders SET status=?, cancelled_at=NOW(), version=version+1 WHERE id=? AND status=?",
-                    OrderStatus.CANCELLED.getCode(), orderId, OrderStatus.PENDING_PAYMENT.getCode());
+                int affected = jdbc.update("UPDATE orders SET status=?, cancelled_at=NOW(), version=version+1 WHERE id=? AND user_id=? AND status=?",
+                    OrderStatus.CANCELLED.getCode(), orderId, userId, OrderStatus.PENDING_PAYMENT.getCode());
                 if (affected == 0) throw new BusinessException("ORDER_STATUS_CHANGED", "Order status already changed");
                 writeStatusLog(orderId, orderNo, OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED, "USER", reason);
                 writeOutbox("ORDER_CANCELLED", "ORDER", orderId, buildPayload(orderNo, reason));
             } else if (currentStatus == OrderStatus.PAID.getCode()) {
-                var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ?",
-                    (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo), orderId);
+                var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ? AND user_id = ?",
+                    (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo),
+                    orderId, userId);
                 inventoryService.releaseBatch(items);
-                int affected = jdbc.update("UPDATE orders SET status=?, version=version+1 WHERE id=? AND status=?",
-                    OrderStatus.REFUNDING.getCode(), orderId, OrderStatus.PAID.getCode());
+                int affected = jdbc.update("UPDATE orders SET status=?, version=version+1 WHERE id=? AND user_id=? AND status=?",
+                    OrderStatus.REFUNDING.getCode(), orderId, userId, OrderStatus.PAID.getCode());
                 if (affected == 0) throw new BusinessException("ORDER_STATUS_CHANGED", "Order status already changed");
                 writeStatusLog(orderId, orderNo, OrderStatus.PAID, OrderStatus.REFUNDING, "USER", reason);
                 writeOutbox("ORDER_CANCEL_REFUND", "ORDER", orderId, buildPayload(orderNo, reason));
@@ -238,7 +253,15 @@ public class OrderService {
     }
 
     public OrderDetail getOrder(long orderId) {
-        var rows = jdbc.query(
+        return getOrder(orderId, null);
+    }
+
+    public OrderDetail getOrder(long orderId, Long userId) {
+        if (proxyMode && userId == null) {
+            throw new BusinessException("SHARD_KEY_REQUIRED",
+                    "X-User-Id is required when querying order details through mini-proxy");
+        }
+        var rows = userId == null ? jdbc.query(
             "SELECT id, order_no, user_id, status, total_amount, paid_amount, remark, " +
             "expires_at, paid_at, cancelled_at, completed_at, created_at " +
             "FROM orders WHERE id = ?",
@@ -250,6 +273,18 @@ public class OrderService {
                 rs.getTimestamp("cancelled_at"), rs.getTimestamp("completed_at"),
                 rs.getTimestamp("created_at")),
             orderId
+        ) : jdbc.query(
+            "SELECT id, order_no, user_id, status, total_amount, paid_amount, remark, " +
+            "expires_at, paid_at, cancelled_at, completed_at, created_at " +
+            "FROM orders WHERE id = ? AND user_id = ?",
+            (rs, rowNum) -> new OrderRow(
+                rs.getLong("id"), rs.getString("order_no"),
+                rs.getLong("user_id"), rs.getInt("status"), rs.getBigDecimal("total_amount"),
+                rs.getBigDecimal("paid_amount"), rs.getString("remark"),
+                rs.getTimestamp("expires_at"), rs.getTimestamp("paid_at"),
+                rs.getTimestamp("cancelled_at"), rs.getTimestamp("completed_at"),
+                rs.getTimestamp("created_at")),
+            orderId, userId
         );
         if (rows.isEmpty()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
         return buildDetail(rows.get(0));
@@ -279,41 +314,41 @@ public class OrderService {
 
         var items = jdbc.query(
             "SELECT product_id, product_sku, product_name, unit_price, quantity, line_amount " +
-            "FROM order_items WHERE order_id = ?",
+            "FROM order_items WHERE order_id = ? AND user_id = ?",
             (rs, rn) -> new OrderItemInfo(rs.getLong("product_id"), rs.getString("product_sku"),
                 rs.getString("product_name"), rs.getBigDecimal("unit_price"),
                 rs.getInt("quantity"), rs.getBigDecimal("line_amount")),
-            orderId
+            orderId, userId
         );
 
         var payments = jdbc.query(
-            "SELECT payment_no, channel, amount, status, paid_at FROM payments WHERE order_id = ? LIMIT 1",
+            "SELECT payment_no, channel, amount, status, paid_at FROM payments WHERE order_id = ? AND user_id = ? LIMIT 1",
             (rs) -> rs.next() ? new PaymentInfo(rs.getString("payment_no"), rs.getString("channel"),
                 rs.getBigDecimal("amount"), rs.getInt("status"),
                 rs.getTimestamp("paid_at") != null ? rs.getTimestamp("paid_at").toLocalDateTime() : null) : null,
-            orderId
+            orderId, userId
         );
 
         var fulfillments = jdbc.query(
             "SELECT ft.task_no, ft.status, ft.assignee_id, ft.claimed_at, ft.shipped_at, " +
             "s.carrier, s.tracking_no FROM fulfillment_tasks ft " +
-            "LEFT JOIN shipments s ON s.task_id = ft.id WHERE ft.order_id = ? LIMIT 1",
+            "LEFT JOIN shipments s ON s.task_id = ft.id WHERE ft.order_id = ? AND ft.user_id = ? LIMIT 1",
             (rs) -> rs.next() ? new FulfillmentInfo(rs.getString("task_no"), rs.getInt("status"),
                 (Long) rs.getObject("assignee_id"),
                 rs.getTimestamp("claimed_at") != null ? rs.getTimestamp("claimed_at").toLocalDateTime() : null,
                 rs.getTimestamp("shipped_at") != null ? rs.getTimestamp("shipped_at").toLocalDateTime() : null,
                 rs.getString("carrier"), rs.getString("tracking_no")) : null,
-            orderId
+            orderId, userId
         );
 
         var timeline = jdbc.query(
             "SELECT from_status, to_status, operator, reason, created_at " +
-            "FROM order_status_logs WHERE order_id = ? ORDER BY created_at",
+            "FROM order_status_logs WHERE order_no = ? ORDER BY created_at",
             (rs, rn) -> new StatusLogEntry(
                 (Integer) rs.getObject("from_status"), rs.getInt("to_status"),
                 rs.getString("operator"), rs.getString("reason"),
                 rs.getTimestamp("created_at").toLocalDateTime()),
-            orderId
+            orderNo
         );
 
         return new OrderDetail(orderId, orderNo, userId, status,

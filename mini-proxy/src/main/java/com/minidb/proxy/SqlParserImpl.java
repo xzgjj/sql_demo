@@ -48,7 +48,9 @@ public class SqlParserImpl {
         // Fast-path for SET/SHOW
         if (trimmed.startsWith("SET ") || trimmed.startsWith("SHOW ")) {
             SqlType type = trimmed.startsWith("SET ") ? SqlType.SET : SqlType.SHOW;
-            return new ParsedSql(type, Set.of(), null, null, AltRouteType.NONE, false, sql, false, false);
+            boolean txCommand = trimmed.equals("SET AUTOCOMMIT=0")
+                    || trimmed.equals("SET AUTOCOMMIT = 0");
+            return new ParsedSql(type, Set.of(), null, null, AltRouteType.NONE, false, sql, false, txCommand);
         }
 
         try {

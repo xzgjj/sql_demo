@@ -46,3 +46,4 @@ minidb:
   order:
     payment-timeout-minutes: 30
     shard-count: 4
+    proxy-mode: false

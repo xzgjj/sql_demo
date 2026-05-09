@@ -91,7 +91,7 @@ export const api = {
   dashboard: () => request<DashboardSummary>('/api/dashboard/summary'),
   loadDemo: () => request<{ orderNos: string[]; fulfillmentTasks: number; exceptions: number }>('/api/console/demo/load', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() } }),
   orders: (userId: number, status?: number) => request<OrderPage>(`/api/orders?${pageParams(status)}`, { headers: { 'X-User-Id': String(userId) } }),
-  order: (id: number) => request<OrderDetail>(`/api/orders/${id}`),
+  order: (id: number, userId?: number) => request<OrderDetail>(`/api/orders/${id}`, userId ? { headers: { 'X-User-Id': String(userId) } } : undefined),
   cancelOrder: (id: number, userId: number, reason: string) => request<void>(`/api/orders/${id}/cancel`, {
     method: 'POST',
     headers: { 'X-User-Id': String(userId), 'Idempotency-Key': crypto.randomUUID() },

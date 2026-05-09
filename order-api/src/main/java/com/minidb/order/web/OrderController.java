@@ -42,8 +42,10 @@ public class OrderController {
 
     @GetMapping("/{orderId}")
     @Operation(summary = "查询订单详情", description = "返回订单、明细、支付、履约和状态时间线。")
-    public ResponseEntity<ApiResponse<OrderService.OrderDetail>> getOrder(@PathVariable("orderId") Long orderId) {
-        return ResponseEntity.ok(ApiResponse.ok(orderService.getOrder(orderId)));
+    public ResponseEntity<ApiResponse<OrderService.OrderDetail>> getOrder(
+            @PathVariable("orderId") Long orderId,
+            @RequestHeader(name = "X-User-Id", required = false) Long userId) {
+        return ResponseEntity.ok(ApiResponse.ok(orderService.getOrder(orderId, userId)));
     }
 
     @GetMapping("/by-no/{orderNo}")
