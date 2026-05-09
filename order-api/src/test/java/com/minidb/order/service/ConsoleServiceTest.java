@@ -55,6 +55,18 @@ class ConsoleServiceTest {
     }
 
     @Test
+    void shouldExposeRuntimeMode() {
+        var mode = consoleService.runtimeMode();
+
+        assertEquals("single-db", mode.mode());
+        assertFalse(mode.proxyMode());
+        assertTrue(mode.demoEnabled());
+        assertTrue(mode.testProfile());
+        assertEquals(4, mode.shardCount());
+        assertTrue(mode.warnings().isEmpty());
+    }
+
+    @Test
     void shouldBuildOrderTraceFromRealTables() {
         consoleService.loadDemoData();
         Long orderId = jdbc.queryForObject("SELECT MIN(id) FROM orders", Long.class);
@@ -76,6 +88,7 @@ class ConsoleServiceTest {
 
         var rejected = consoleService.previewRoute("SELECT * FROM orders");
         assertEquals("REJECT", rejected.target());
+        assertTrue(rejected.reason().contains("MISSING_SHARD_KEY"));
     }
 
     @Test
@@ -85,6 +98,15 @@ class ConsoleServiceTest {
         assertEquals("mvcc-rc-rr", result.scenario());
         assertFalse(result.steps().isEmpty());
         assertFalse(result.mvccChains().isEmpty());
+    }
+
+    @Test
+    void shouldRunMvccWriteConflictScenario() {
+        var result = consoleService.runLabScenario("mvcc-write-conflict");
+
+        assertEquals("mvcc-write-conflict", result.scenario());
+        assertTrue(result.steps().stream().anyMatch(step -> step.contains("WriteConflictException")));
+        assertTrue(result.mvccChains().containsKey("inventory:sku-1001"));
     }
 
     private long countOrdersByStatus(int status) {

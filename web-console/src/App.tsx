@@ -3,7 +3,7 @@ import { PageContainer, ProCard, ProTable } from '@ant-design/pro-components';
 import type { ProColumns } from '@ant-design/pro-components';
 import { Alert, Button, Descriptions, Drawer, Input, Layout, Menu, Modal, Progress, Radio, Segmented, Select, Skeleton, Space, Statistic, Tabs, Tag, Timeline, Typography, message } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
-import { api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, TaskItem, orderStatusText, taskStatusText } from './api';
+import { api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, RuntimeMode, TaskItem, orderStatusText, taskStatusText } from './api';
 import { Lang, tr } from './i18n';
 
 const { Sider, Header, Content } = Layout;
@@ -81,10 +81,16 @@ export default function App() {
   const [terminal, setTerminal] = useState<TerminalKey>(initialLocation.terminal);
   const [page, setPage] = useState<PageKey>(initialLocation.page);
   const [health, setHealth] = useState<'checking' | 'ready' | 'error'>('checking');
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>();
   const [traceOrderId, setTraceOrderId] = useState(initialLocation.orderId ?? 1);
 
   useEffect(() => {
-    api.dashboard().then(() => setHealth('ready')).catch(() => setHealth('error'));
+    api.runtimeMode()
+      .then((mode) => {
+        setRuntimeMode(mode);
+        setHealth('ready');
+      })
+      .catch(() => api.dashboard().then(() => setHealth('ready')).catch(() => setHealth('error')));
   }, []);
 
   useEffect(() => {
@@ -144,6 +150,7 @@ export default function App() {
           <Tag color={health === 'ready' ? 'green' : health === 'checking' ? 'blue' : 'red'}>
             {healthText(health, lang)}
           </Tag>
+          {runtimeMode && <Tag color={runtimeMode.proxyMode ? 'purple' : 'blue'}>{runtimeMode.mode}</Tag>}
         </div>
       </Sider>
       <Layout>
@@ -165,6 +172,9 @@ export default function App() {
           </div>
         </Header>
         <Content>
+          {runtimeMode?.warnings?.length ? (
+            <Alert className="runtime-alert" type="warning" showIcon message={runtimeMode.warnings.join(' ')} />
+          ) : null}
           {terminal === 'business' && page === 'dashboard' && <Dashboard lang={lang} openPage={(target) => navigate('business', target)} />}
           {terminal === 'business' && page === 'orders' && <Orders lang={lang} openTrace={(orderId) => navigate('database', 'trace', orderId)} />}
           {terminal === 'business' && page === 'fulfillment' && <Fulfillment lang={lang} />}
@@ -172,7 +182,7 @@ export default function App() {
           {terminal === 'database' && page === 'lab' && <Lab lang={lang} />}
           {terminal === 'database' && page === 'trace' && <DatabaseTrace lang={lang} orderId={traceOrderId} setOrderId={updateTraceOrderId} backToOrders={() => navigate('business', 'orders', traceOrderId)} />}
           {terminal === 'database' && page === 'routePreview' && <RoutePreview lang={lang} />}
-          {page === 'settings' && <Settings lang={lang} health={health} />}
+          {page === 'settings' && <Settings lang={lang} health={health} runtimeMode={runtimeMode} />}
         </Content>
       </Layout>
     </Layout>
@@ -474,6 +484,7 @@ function Lab({ lang }: { lang: Lang }) {
                 { value: 'create-order', label: lang === 'zh' ? '创建订单：库存锁定、幂等、outbox、路由表' : 'Create Order' },
                 { value: 'payment-callback', label: lang === 'zh' ? '支付回调：验签、金额校验、异常工单' : 'Payment Callback' },
                 { value: 'mvcc-rc-rr', label: lang === 'zh' ? 'MVCC：RC / RR Read View 对比' : 'MVCC RC vs RR' },
+                { value: 'mvcc-write-conflict', label: lang === 'zh' ? 'MVCC：写写冲突保护最新版本' : 'MVCC Write Conflict' },
               ]} />
             </Space>
           </ProCard>
@@ -584,7 +595,7 @@ function RoutePreview({ lang }: { lang: Lang }) {
   );
 }
 
-function Settings({ lang, health }: { lang: Lang; health: string }) {
+function Settings({ lang, health, runtimeMode }: { lang: Lang; health: string; runtimeMode?: RuntimeMode }) {
   return (
     <PageContainer title={tr(lang, 'settings')}>
       <div className="two-col">
@@ -592,7 +603,10 @@ function Settings({ lang, health }: { lang: Lang; health: string }) {
           <Descriptions column={1}>
             <Descriptions.Item label="API Base">/api</Descriptions.Item>
             <Descriptions.Item label={tr(lang, 'connection')}>{healthText(health, lang)}</Descriptions.Item>
-            <Descriptions.Item label={lang === 'zh' ? '数据模式' : 'Data Mode'}>{health === 'ready' ? tr(lang, 'realMode') : tr(lang, 'demoMode')}</Descriptions.Item>
+            <Descriptions.Item label={lang === 'zh' ? '数据模式' : 'Data Mode'}>{runtimeMode?.mode ?? (health === 'ready' ? tr(lang, 'realMode') : tr(lang, 'demoMode'))}</Descriptions.Item>
+            <Descriptions.Item label="proxyMode">{String(runtimeMode?.proxyMode ?? false)}</Descriptions.Item>
+            <Descriptions.Item label="demoEnabled">{String(runtimeMode?.demoEnabled ?? false)}</Descriptions.Item>
+            <Descriptions.Item label="shardCount">{runtimeMode?.shardCount ?? '-'}</Descriptions.Item>
           </Descriptions>
         </ProCard>
         <ProCard title={lang === 'zh' ? '交付验收清单' : 'Acceptance Checklist'}>

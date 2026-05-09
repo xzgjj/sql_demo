@@ -170,6 +170,10 @@ body {
   margin-bottom: 16px;
 }
 
+.runtime-alert {
+  margin: 16px 24px 0;
+}
+
 pre {
   max-height: 360px;
   overflow: auto;

@@ -75,6 +75,16 @@ export type LabRunResult = {
   mvccChains: Record<string, string>;
 };
 
+export type RuntimeMode = {
+  mode: string;
+  proxyMode: boolean;
+  demoEnabled: boolean;
+  testProfile: boolean;
+  shardCount: number;
+  activeProfiles: string;
+  warnings: string[];
+};
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -88,6 +98,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  runtimeMode: () => request<RuntimeMode>('/api/runtime/mode'),
   dashboard: () => request<DashboardSummary>('/api/dashboard/summary'),
   loadDemo: () => request<{ orderNos: string[]; fulfillmentTasks: number; exceptions: number }>('/api/console/demo/load', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() } }),
   orders: (userId: number, status?: number) => request<OrderPage>(`/api/orders?${pageParams(status)}`, { headers: { 'X-User-Id': String(userId) } }),

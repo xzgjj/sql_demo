@@ -6,6 +6,15 @@ vi.mock('./api', async () => {
   return {
     ...actual,
     api: {
+      runtimeMode: vi.fn(async () => ({
+        mode: 'single-db',
+        proxyMode: false,
+        demoEnabled: true,
+        testProfile: true,
+        shardCount: 4,
+        activeProfiles: 'test',
+        warnings: [],
+      })),
       dashboard: vi.fn(async () => ({
         ordersToday: 0,
         paidSuccess: 0,

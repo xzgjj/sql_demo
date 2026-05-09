@@ -16,6 +16,11 @@ public class ConsoleController {
         this.consoleService = consoleService;
     }
 
+    @GetMapping("/runtime/mode")
+    public ResponseEntity<ApiResponse<ConsoleService.RuntimeMode>> runtimeMode() {
+        return ResponseEntity.ok(ApiResponse.ok(consoleService.runtimeMode()));
+    }
+
     @GetMapping("/dashboard/summary")
     public ResponseEntity<ApiResponse<ConsoleService.DashboardSummary>> dashboardSummary() {
         return ResponseEntity.ok(ApiResponse.ok(consoleService.dashboardSummary()));

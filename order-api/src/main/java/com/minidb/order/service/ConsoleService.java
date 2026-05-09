@@ -11,6 +11,7 @@ import com.minidb.order.dto.CreateOrderRequest;
 import com.minidb.order.dto.PaymentCallbackRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -37,14 +38,17 @@ public class ConsoleService {
     private final int shardCount;
     private final boolean demoEnabled;
     private final boolean proxyMode;
+    private final String activeProfiles;
 
     public ConsoleService(JdbcTemplate jdbc, OrderService orderService, PaymentService paymentService,
                           OutboxProcessor outboxProcessor, FulfillmentService fulfillmentService,
                           IdempotencyService idempotencyService, ObjectMapper objectMapper,
+                          Environment environment,
                           @Value("${minidb.payment.mock-sign-secret}") String mockSignSecret,
                           @Value("${minidb.order.shard-count:4}") int shardCount,
                           @Value("${minidb.console.demo-enabled:false}") boolean demoEnabled,
-                          @Value("${minidb.order.proxy-mode:false}") boolean proxyMode) {
+                          @Value("${minidb.order.proxy-mode:false}") boolean proxyMode,
+                          @Value("${spring.profiles.active:}") String activeProfiles) {
         this.jdbc = jdbc;
         this.orderService = orderService;
         this.paymentService = paymentService;
@@ -56,6 +60,21 @@ public class ConsoleService {
         this.shardCount = shardCount;
         this.demoEnabled = demoEnabled;
         this.proxyMode = proxyMode;
+        String profiles = activeProfiles == null ? "" : activeProfiles;
+        if (profiles.isBlank()) {
+            profiles = String.join(",", environment.getActiveProfiles());
+        }
+        this.activeProfiles = profiles;
+    }
+
+    public RuntimeMode runtimeMode() {
+        String mode = proxyMode ? "proxy" : "single-db";
+        boolean testProfile = activeProfiles.contains("test");
+        List<String> warnings = proxyMode
+                ? List.of("Console-wide aggregation and order_id-only trace are disabled in proxy mode.",
+                "Use user_id, order_no or payment_no for sharded business data.")
+                : List.of();
+        return new RuntimeMode(mode, proxyMode, demoEnabled, testProfile, shardCount, activeProfiles, warnings);
     }
 
     public DashboardSummary dashboardSummary() {
@@ -194,7 +213,7 @@ public class ConsoleService {
         String lower = normalized.toLowerCase();
         String keyType = "UNKNOWN";
         String target = "REJECT";
-        String reason = "缺少 user_id/order_no/payment_no，真实代理会拒绝高风险查询";
+        String reason = "MISSING_SHARD_KEY: 缺少 user_id/order_no/payment_no，真实代理会拒绝高风险查询";
         Long userId = findLongAfter(lower, "user_id");
         if (userId != null) {
             keyType = "USER_ID";
@@ -222,6 +241,9 @@ public class ConsoleService {
         String selected = scenario == null ? "create-order" : scenario;
         if ("mvcc-rc-rr".equals(selected)) {
             return runMvccScenario();
+        }
+        if ("mvcc-write-conflict".equals(selected)) {
+            return runMvccWriteConflictScenario();
         }
         List<String> steps = "payment-callback".equals(selected)
                 ? List.of("验证支付签名", "按 payment_no 查询路由", "读取订单快照", "比对支付金额", "更新支付订单或创建异常", "写入事件箱")
@@ -256,6 +278,26 @@ public class ConsoleService {
         return new LabRunResult("mvcc-rc-rr", steps, List.of(),
                 "RR 事务保持 Read View；RC 每次读取刷新可见性",
                 List.of(), List.of(), chains);
+    }
+
+    private LabRunResult runMvccWriteConflictScenario() {
+        var txnManager = new TransactionManager();
+        var store = new VersionedKVStore(txnManager);
+        var runner = new ScenarioRunner(txnManager, store);
+        var result = runner.run(List.of(
+                ScenarioStep.begin("t1", IsolationLevel.READ_COMMITTED),
+                ScenarioStep.put("t1", "inventory:sku-1001", "locked-by-t1".getBytes(StandardCharsets.UTF_8)),
+                ScenarioStep.begin("t2", IsolationLevel.READ_COMMITTED),
+                ScenarioStep.put("t2", "inventory:sku-1001", "locked-by-t2".getBytes(StandardCharsets.UTF_8))
+        ));
+        var steps = result.trace().stream()
+                .map(e -> e.sequence() + ". " + e.operation() + " "
+                        + (e.detail() == null ? "" : e.detail()))
+                .toList();
+        var chains = Map.of("inventory:sku-1001", store.versionChainPrettyPrint("inventory:sku-1001"));
+        return new LabRunResult("mvcc-write-conflict", steps, List.of(),
+                "T2 attempts to write a key whose latest version is still owned by active T1.",
+                List.of(), List.of("Write conflict protects the latest uncommitted version."), chains);
     }
 
     private CreatedOrder createOrder(long userId, String key) {
@@ -408,4 +450,6 @@ public class ConsoleService {
     public record LabRunResult(String scenario, List<String> steps, List<RoutePreview> routeTrace,
                                String transactionContext, List<String> idempotency,
                                List<String> outbox, Map<String, String> mvccChains) {}
+    public record RuntimeMode(String mode, boolean proxyMode, boolean demoEnabled, boolean testProfile,
+                              int shardCount, String activeProfiles, List<String> warnings) {}
 }
