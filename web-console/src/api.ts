@@ -1,4 +1,4 @@
-export type ApiResponse<T> = { success: boolean; data: T; errorCode?: string; message?: string };
+export type ApiResponse<T> = { success: boolean; data: T; errorCode?: string; errorMessage?: string };
 
 export class ApiError extends Error {
   errorCode?: string;
@@ -101,14 +101,45 @@ export type RuntimeMode = {
   warnings: string[];
 };
 
+export function getApiKey(): string | null {
+  try {
+    return sessionStorage.getItem('minidb-api-key');
+  } catch {
+    return null;
+  }
+}
+
+export function setApiKey(key: string): void {
+  try {
+    sessionStorage.setItem('minidb-api-key', key);
+  } catch {
+    // sessionStorage not available
+  }
+}
+
+export function clearApiKey(): void {
+  try {
+    sessionStorage.removeItem('minidb-api-key');
+  } catch {
+    // sessionStorage not available
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string> ?? {}),
+  };
+
+  const apiKey = getApiKey();
+  if (apiKey) {
+    headers['X-Api-Key'] = apiKey;
+  }
+
+  const res = await fetch(url, { ...init, headers });
   const body = (await res.json()) as ApiResponse<T>;
   if (!res.ok || body.success === false) {
-    throw new ApiError(body.message || body.errorCode || `HTTP ${res.status}`, res.status, body.errorCode);
+    throw new ApiError(body.errorMessage || body.errorCode || `HTTP ${res.status}`, res.status, body.errorCode);
   }
   return body.data;
 }

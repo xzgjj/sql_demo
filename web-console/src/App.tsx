@@ -3,7 +3,7 @@ import { PageContainer, ProCard, ProTable } from '@ant-design/pro-components';
 import type { ProColumns } from '@ant-design/pro-components';
 import { Alert, Button, Descriptions, Drawer, Input, Layout, Menu, Modal, Progress, Radio, Segmented, Select, Skeleton, Space, Statistic, Tabs, Tag, Timeline, Typography, message } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, ProxyDecisionsResult, ProxyPoolsResult, ProxySessionsResult, RuntimeMode, TaskItem, orderStatusText, taskStatusText } from './api';
+import { ApiError, api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, ProxyDecisionsResult, ProxyPoolsResult, ProxySessionsResult, RuntimeMode, TaskItem, clearApiKey, getApiKey, orderStatusText, setApiKey, taskStatusText } from './api';
 import { Lang, tr } from './i18n';
 
 const { Sider, Header, Content } = Layout;
@@ -976,28 +976,121 @@ function RoutePreview({ lang }: { lang: Lang }) {
 }
 
 function Settings({ lang, health, runtimeMode }: { lang: Lang; health: string; runtimeMode?: RuntimeMode }) {
+  const [apiKey, setApiKeyLocal] = useState(getApiKey() ?? '');
+  const [keyStatus, setKeyStatus] = useState<'idle' | 'testing' | 'valid' | 'invalid'>('idle');
+  const [showKey, setShowKey] = useState(false);
+
+  const testApiKey = async (key: string) => {
+    if (!key.trim()) {
+      setKeyStatus('idle');
+      return;
+    }
+    setKeyStatus('testing');
+    try {
+      setApiKey(key.trim());
+      await api.runtimeMode();
+      setKeyStatus('valid');
+      message.success(lang === 'zh' ? 'API Key 验证通过' : 'API Key validated');
+    } catch (e) {
+      clearApiKey();
+      setKeyStatus('invalid');
+      const msg = e instanceof ApiError ? e.message : (e as Error).message;
+      message.error(msg);
+    }
+  };
+
+  const handleKeyChange = (value: string) => {
+    setApiKeyLocal(value);
+    setKeyStatus('idle');
+  };
+
+  const handleKeyBlur = () => {
+    if (apiKey.trim()) {
+      setApiKey(apiKey.trim());
+    } else {
+      clearApiKey();
+    }
+  };
+
   return (
     <PageContainer title={tr(lang, 'settings')}>
-      <div className="two-col">
-        <ProCard title={lang === 'zh' ? '运行设置' : 'Runtime'}>
-          <Descriptions column={1}>
-            <Descriptions.Item label="API Base">/api</Descriptions.Item>
-            <Descriptions.Item label={tr(lang, 'connection')}>{healthText(health, lang)}</Descriptions.Item>
-            <Descriptions.Item label={lang === 'zh' ? '数据模式' : 'Data Mode'}>{runtimeMode?.mode ?? (health === 'ready' ? tr(lang, 'realMode') : tr(lang, 'demoMode'))}</Descriptions.Item>
-            <Descriptions.Item label="proxyMode">{String(runtimeMode?.proxyMode ?? false)}</Descriptions.Item>
-            <Descriptions.Item label="demoEnabled">{String(runtimeMode?.demoEnabled ?? false)}</Descriptions.Item>
-            <Descriptions.Item label="shardCount">{runtimeMode?.shardCount ?? '-'}</Descriptions.Item>
-          </Descriptions>
-        </ProCard>
-        <ProCard title={lang === 'zh' ? '交付验收清单' : 'Acceptance Checklist'}>
-          <Space direction="vertical">
-            <Tag color="green">订单履约终端 / 数据库实验终端</Tag>
-            <Tag color="green">加载 / 空态 / 错误态</Tag>
-            <Tag color="green">写操作携带 Idempotency-Key</Tag>
-            <Tag color="orange">Proxy metrics</Tag>
+      <Space direction="vertical" size={16} className="full">
+        <ProCard title={tr(lang, 'apiKey')}>
+          <Space direction="vertical" className="full" size={12}>
+            <Alert
+              type={keyStatus === 'valid' ? 'success' : keyStatus === 'invalid' ? 'error' : 'info'}
+              showIcon
+              message={
+                keyStatus === 'testing' ? tr(lang, 'apiKeyTesting') :
+                keyStatus === 'valid' ? tr(lang, 'apiKeyValid') :
+                keyStatus === 'invalid' ? tr(lang, 'apiKeyInvalid') :
+                apiKey ? tr(lang, 'apiKeySaved') : tr(lang, 'apiKeyMissing')
+              }
+            />
+            <Input
+              type={showKey ? 'text' : 'password'}
+              value={apiKey}
+              onChange={(e) => handleKeyChange(e.target.value)}
+              onBlur={handleKeyBlur}
+              placeholder={tr(lang, 'apiKeyPlaceholder')}
+              prefix={showKey ? null : null}
+              suffix={
+                <Button
+                  type="text"
+                  size="small"
+                  onClick={() => setShowKey(!showKey)}
+                >
+                  {showKey ? (lang === 'zh' ? '隐藏' : 'Hide') : (lang === 'zh' ? '显示' : 'Show')}
+                </Button>
+              }
+              maxLength={128}
+            />
+            <Typography.Text type="secondary">{tr(lang, 'apiKeyHint')}</Typography.Text>
+            <Space>
+              <Button
+                type="primary"
+                loading={keyStatus === 'testing'}
+                onClick={() => testApiKey(apiKey)}
+              >
+                {tr(lang, 'testKey')}
+              </Button>
+              <Button
+                danger
+                onClick={() => {
+                  setApiKeyLocal('');
+                  clearApiKey();
+                  setKeyStatus('idle');
+                  message.info(lang === 'zh' ? 'API Key 已清除' : 'API Key cleared');
+                }}
+              >
+                {lang === 'zh' ? '清除' : 'Clear'}
+              </Button>
+            </Space>
           </Space>
         </ProCard>
-      </div>
+
+        <div className="two-col">
+          <ProCard title={lang === 'zh' ? '运行设置' : 'Runtime'}>
+            <Descriptions column={1}>
+              <Descriptions.Item label="API Base">/api</Descriptions.Item>
+              <Descriptions.Item label={tr(lang, 'connection')}>{healthText(health, lang)}</Descriptions.Item>
+              <Descriptions.Item label={lang === 'zh' ? '数据模式' : 'Data Mode'}>{runtimeMode?.mode ?? (health === 'ready' ? tr(lang, 'realMode') : tr(lang, 'demoMode'))}</Descriptions.Item>
+              <Descriptions.Item label="proxyMode">{String(runtimeMode?.proxyMode ?? false)}</Descriptions.Item>
+              <Descriptions.Item label="demoEnabled">{String(runtimeMode?.demoEnabled ?? false)}</Descriptions.Item>
+              <Descriptions.Item label="shardCount">{runtimeMode?.shardCount ?? '-'}</Descriptions.Item>
+            </Descriptions>
+          </ProCard>
+          <ProCard title={lang === 'zh' ? '交付验收清单' : 'Acceptance Checklist'}>
+            <Space direction="vertical">
+              <Tag color="green">{lang === 'zh' ? '订单履约终端 / 数据库实验终端' : 'Business / Database terminal'}</Tag>
+              <Tag color="green">{lang === 'zh' ? '加载 / 空态 / 错误态' : 'Loading / Empty / Error states'}</Tag>
+              <Tag color="green">{lang === 'zh' ? '写操作携带 Idempotency-Key' : 'Write ops with Idempotency-Key'}</Tag>
+              <Tag color={keyStatus === 'valid' ? 'green' : 'orange'}>{lang === 'zh' ? 'API Key 认证' : 'API Key auth'}</Tag>
+              <Tag color="orange">Proxy metrics</Tag>
+            </Space>
+          </ProCard>
+        </div>
+      </Space>
     </PageContainer>
   );
 }

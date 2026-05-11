@@ -31,6 +31,13 @@ public class MiniProxyServer {
     private ProxyManagementServer managementServer;
 
     public void start() throws InterruptedException {
+        // Validate credential configuration at startup
+        var credWarnings = config.validateCredentials();
+        if (!credWarnings.isEmpty()) {
+            log.warn("Credential warnings ({} items):", credWarnings.size());
+            credWarnings.forEach(w -> log.warn("  - {}", w));
+        }
+
         boolean epoll = Epoll.isAvailable();
         int threads = Runtime.getRuntime().availableProcessors();
         bossGroup = epoll ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);

@@ -3,7 +3,7 @@ services:
     image: mysql:8.4
     container_name: minidb-primary
     environment:
-      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_PASSWORD: ${MINIDB_MYSQL_ROOT_PASSWORD:-root123}
       MYSQL_DATABASE: minidb
     ports:
       - "4407:3306"
@@ -18,7 +18,7 @@ services:
     image: mysql:8.4
     container_name: minidb-replica
     environment:
-      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_PASSWORD: ${MINIDB_MYSQL_ROOT_PASSWORD:-root123}
       MYSQL_DATABASE: minidb
     ports:
       - "4408:3306"
@@ -33,7 +33,7 @@ services:
     image: mysql:8.4
     container_name: minidb-shard-0
     environment:
-      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_PASSWORD: ${MINIDB_MYSQL_ROOT_PASSWORD:-root123}
       MYSQL_DATABASE: minidb_shard_0
     ports:
       - "4409:3306"
@@ -48,7 +48,7 @@ services:
     image: mysql:8.4
     container_name: minidb-shard-1
     environment:
-      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_PASSWORD: ${MINIDB_MYSQL_ROOT_PASSWORD:-root123}
       MYSQL_DATABASE: minidb_shard_1
     ports:
       - "4410:3306"
@@ -63,7 +63,7 @@ services:
     image: mysql:8.4
     container_name: minidb-shard-2
     environment:
-      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_PASSWORD: ${MINIDB_MYSQL_ROOT_PASSWORD:-root123}
       MYSQL_DATABASE: minidb_shard_2
     ports:
       - "4411:3306"
@@ -78,7 +78,7 @@ services:
     image: mysql:8.4
     container_name: minidb-shard-3
     environment:
-      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_PASSWORD: ${MINIDB_MYSQL_ROOT_PASSWORD:-root123}
       MYSQL_DATABASE: minidb_shard_3
     ports:
       - "4412:3306"

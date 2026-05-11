@@ -58,6 +58,27 @@ public record ProxyConfig(
         );
     }
 
+    /**
+     * Returns a list of warnings for credentials still using built-in defaults.
+     * Call this at startup to alert operators that environment variables should be set.
+     */
+    public java.util.List<String> validateCredentials() {
+        var warnings = new java.util.ArrayList<String>();
+        checkWarning("MINIDB_PROXY_USERNAME", "proxy", warnings);
+        checkWarning("MINIDB_PROXY_PASSWORD", "proxy123", warnings);
+        checkWarning("MINIDB_BACKEND_USERNAME", "root", warnings);
+        checkWarning("MINIDB_BACKEND_PASSWORD", "root123", warnings);
+        return warnings;
+    }
+
+    private static void checkWarning(String envName, String defaultVal, java.util.List<String> out) {
+        String fromEnv = System.getenv(envName);
+        if (fromEnv == null || fromEnv.isBlank()) {
+            out.add("Using default " + envName + "='" + defaultVal
+                    + "'. Set the environment variable for production use.");
+        }
+    }
+
     /** Host:port for PRIMARY data source */
     public String primaryHost() { return backendHost; }
     public int primaryPort() { return backendPortBase; }
