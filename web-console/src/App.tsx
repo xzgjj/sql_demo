@@ -1415,6 +1415,40 @@ function EmptyText({ lang }: { lang: Lang }) {
   return <Typography.Text type="secondary">{tr(lang, 'empty')}</Typography.Text>;
 }
 
+function CodeBlock({ cmd, lang }: { cmd: string; lang: Lang }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(cmd);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback for non-HTTPS
+      const ta = document.createElement('textarea');
+      ta.value = cmd;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+  return (
+    <div style={{ position: 'relative', marginTop: 8 }}>
+      <pre style={{ margin: 0, paddingRight: 60 }}>{cmd}</pre>
+      <Button
+        size="small"
+        type={copied ? 'primary' : 'default'}
+        style={{ position: 'absolute', top: 4, right: 4, fontSize: 12, height: 24 }}
+        onClick={copy}
+      >
+        {copied ? (lang === 'zh' ? '已复制' : 'Copied') : (lang === 'zh' ? '复制' : 'Copy')}
+      </Button>
+    </div>
+  );
+}
+
 function formatApiError(error: unknown, lang: Lang) {
   if (error instanceof ApiError) {
     const prefix = error.errorCode ? `[${error.errorCode}] ` : `[HTTP ${error.status}] `;
@@ -1475,19 +1509,23 @@ function ProxyPage({ lang }: { lang: Lang }) {
   const hasData = poolEntries.length > 0 || (sessions?.count ?? 0) > 0 || (decisions?.count ?? 0) > 0;
 
   return (
-    <PageContainer title={tr(lang, 'proxy')} extra={
+    <PageContainer title={
       <Space>
+        {tr(lang, 'proxy')}
         {proxyStatus && (
           <Tag color={proxyStatus.proxyMode && proxyStatus.proxyReachable ? 'green'
-            : proxyStatus.proxyReachable ? 'orange' : 'default'}>
+            : proxyStatus.proxyReachable ? 'orange' : 'default'} style={{ fontSize: 13 }}>
             {proxyStatus.proxyMode && proxyStatus.proxyReachable ? 'Proxy 模式'
               : proxyStatus.proxyReachable ? 'Proxy 在线' : '直连模式'}
           </Tag>
         )}
-        <Button onClick={() => setShowGuide(true)}>
+      </Space>
+    } extra={
+      <Space size={8}>
+        <Button size="middle" onClick={() => setShowGuide(true)}>
           {lang === 'zh' ? '如何启用 Proxy' : 'Enable Proxy'}
         </Button>
-        <Button type="primary" loading={loading} onClick={reload}>{tr(lang, 'refresh')}</Button>
+        <Button size="middle" type="primary" loading={loading} onClick={reload}>{tr(lang, 'refresh')}</Button>
       </Space>
     }>
       <Space direction="vertical" size={16} className="full">
@@ -1596,25 +1634,32 @@ function ProxyPage({ lang }: { lang: Lang }) {
             </Descriptions>
           </ProCard>
 
-          <ProCard size="small" title={lang === 'zh' ? '启动步骤（3 步）' : 'Startup Steps (3)'}>
+          <ProCard size="small" title={lang === 'zh' ? '启动步骤（4 步）' : 'Startup Steps (3)'}>
             <Timeline items={[
+              { color: 'gray', children: <span>
+                <strong>{lang === 'zh' ? '第 0 步：进入项目根目录' : 'Step 0: Enter project root'}</strong>
+                <CodeBlock cmd="cd D:\\vsc_code\\mysql\\sql_demo" lang={lang} />
+                <Typography.Text type="secondary">
+                  {lang === 'zh' ? '所有命令必须在项目根目录执行（docker-compose.yml 和 pom.xml 所在位置）' : 'All commands must run from the project root (where docker-compose.yml and pom.xml live)'}
+                </Typography.Text>
+              </span> },
               { color: 'blue', children: <span>
                 <strong>{lang === 'zh' ? '第 1 步：启动 MySQL 容器（6 个实例）' : 'Step 1: Start MySQL containers (6 instances)'}</strong>
-                <pre className="top-gap">docker compose up -d</pre>
+                <CodeBlock cmd="docker compose up -d" lang={lang} />
                 <Typography.Text type="secondary">
                   {lang === 'zh' ? '启动 PRIMARY、REPLICA、shard_0~3 共 6 个 MySQL 8.4 容器，端口 4407~4412' : 'Starts PRIMARY, REPLICA, shard_0~3 (6 MySQL 8.4 containers on ports 4407-4412)'}
                 </Typography.Text>
               </span> },
               { color: 'blue', children: <span>
                 <strong>{lang === 'zh' ? '第 2 步：启动 mini-proxy' : 'Step 2: Start mini-proxy'}</strong>
-                <pre className="top-gap">mvn -pl mini-proxy exec:java -Dexec.mainClass=com.minidb.proxy.MiniProxyServer</pre>
+                <CodeBlock cmd="mvn -pl mini-proxy exec:java -Dexec.mainClass=com.minidb.proxy.MiniProxyServer" lang={lang} />
                 <Typography.Text type="secondary">
                   {lang === 'zh' ? 'Proxy 监听 3306（MySQL 协议）+ 4307（管理接口），连接到后端 MySQL 实例' : 'Proxy listens on 3306 (MySQL protocol) + 4307 (management API), connects to backend MySQL instances'}
                 </Typography.Text>
               </span> },
               { color: 'green', children: <span>
                 <strong>{lang === 'zh' ? '第 3 步：order-api 切换到 proxy 模式' : 'Step 3: Switch order-api to proxy mode'}</strong>
-                <pre className="top-gap">mvn -pl order-api spring-boot:run -Dspring-boot.run.profiles=proxy</pre>
+                <CodeBlock cmd="mvn -pl order-api spring-boot:run -Dspring-boot.run.profiles=proxy" lang={lang} />
                 <Typography.Text type="secondary">
                   {lang === 'zh' ? 'order-api 将通过 mini-proxy（4306 端口）访问数据库，本页可观测连接池、会话和路由决策' : 'order-api accesses databases via mini-proxy (port 4306), this page will show connection pools, sessions, and route decisions'}
                 </Typography.Text>
