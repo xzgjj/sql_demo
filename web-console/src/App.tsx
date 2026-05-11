@@ -1652,14 +1652,14 @@ function ProxyPage({ lang }: { lang: Lang }) {
               </span> },
               { color: 'blue', children: <span>
                 <strong>{lang === 'zh' ? '第 2 步：启动 mini-proxy' : 'Step 2: Start mini-proxy'}</strong>
-                <CodeBlock cmd="mvn -pl mini-proxy exec:java -Dexec.mainClass=com.minidb.proxy.MiniProxyServer" lang={lang} />
+                <CodeBlock cmd='mvn -pl mini-proxy exec:java "-Dexec.mainClass=com.minidb.proxy.MiniProxyServer"' lang={lang} />
                 <Typography.Text type="secondary">
                   {lang === 'zh' ? 'Proxy 监听 3306（MySQL 协议）+ 4307（管理接口），连接到后端 MySQL 实例' : 'Proxy listens on 3306 (MySQL protocol) + 4307 (management API), connects to backend MySQL instances'}
                 </Typography.Text>
               </span> },
               { color: 'green', children: <span>
                 <strong>{lang === 'zh' ? '第 3 步：order-api 切换到 proxy 模式' : 'Step 3: Switch order-api to proxy mode'}</strong>
-                <CodeBlock cmd="mvn -pl order-api spring-boot:run -Dspring-boot.run.profiles=proxy" lang={lang} />
+                <CodeBlock cmd='mvn -pl order-api spring-boot:run "-Dspring-boot.run.profiles=proxy"' lang={lang} />
                 <Typography.Text type="secondary">
                   {lang === 'zh' ? 'order-api 将通过 mini-proxy（4306 端口）访问数据库，本页可观测连接池、会话和路由决策' : 'order-api accesses databases via mini-proxy (port 4306), this page will show connection pools, sessions, and route decisions'}
                 </Typography.Text>
