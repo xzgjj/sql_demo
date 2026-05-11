@@ -452,13 +452,6 @@ public class OrderService {
         }
     }
 
-    private void rejectProxyWrite(String action) {
-        if (proxyMode) {
-            throw new BusinessException("PROXY_MODE_UNSUPPORTED_WRITE",
-                    "Cannot " + action + " in proxy mode because the workflow spans PRIMARY metadata tables and sharded order tables without XA.");
-        }
-    }
-
     // ---- Query methods ----
 
     public OrderListPage listOrders(long userId, Integer status, int page, int pageSize) {
