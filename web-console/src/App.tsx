@@ -853,7 +853,7 @@ function Lab({ lang }: { lang: Lang }) {
               <Descriptions column={1} size="small">
                 <Descriptions.Item label={lang === 'zh' ? '运行' : 'Run'}><code>POST /api/lab/scenarios/{'{scenario}'}/run</code></Descriptions.Item>
                 <Descriptions.Item label={lang === 'zh' ? '返回' : 'Return'}><code>steps, mvccSteps, mvccChains, readViews, assertions, errors</code></Descriptions.Item>
-                <Descriptions.Item label={lang === 'zh' ? '状态' : 'Status'}><Tag color="green">{lang === 'zh' ? 'v11 接口就绪' : 'v11 API Ready'}</Tag></Descriptions.Item>
+                <Descriptions.Item label={lang === 'zh' ? '状态' : 'Status'}><Tag color="green">{lang === 'zh' ? 'MVCC 场景 + 自定义实验' : 'MVCC scenarios + custom experiments'}</Tag></Descriptions.Item>
               </Descriptions>
             </ProCard>
           )}
