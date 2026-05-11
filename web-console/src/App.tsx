@@ -1634,7 +1634,33 @@ function ProxyPage({ lang }: { lang: Lang }) {
             </Descriptions>
           </ProCard>
 
-          <ProCard size="small" title={lang === 'zh' ? '启动步骤（4 步）' : 'Startup Steps (3)'}>
+          <ProCard size="small" title={lang === 'zh' ? '直连 ↔ Proxy 模式切换' : 'Switch: Direct ↔ Proxy'}>
+            <Timeline items={[
+              { color: 'orange', children: <span>
+                <strong>{lang === 'zh' ? '切到 Proxy 模式' : 'Switch to Proxy mode'}</strong>
+                <p>{lang === 'zh'
+                  ? '先 Ctrl+C 停掉当前 order-api（直连模式），再执行：'
+                  : 'First Ctrl+C to stop the current order-api (direct mode), then run:'}</p>
+                <CodeBlock cmd={'$env:MINIDB_PROXY_PORT=13306\nmvn -pl order-api clean spring-boot:run "-Dspring-boot.run.profiles=proxy"'} lang={lang} />
+              </span> },
+              { color: 'green', children: <span>
+                <strong>{lang === 'zh' ? '切回直连模式' : 'Switch back to Direct mode'}</strong>
+                <p>{lang === 'zh'
+                  ? '先 Ctrl+C 停掉当前 order-api（proxy 模式），再执行：'
+                  : 'First Ctrl+C to stop the current order-api (proxy mode), then run:'}</p>
+                <CodeBlock cmd='mvn -pl order-api spring-boot:run -Dspring-boot.run.profiles=test' lang={lang} />
+              </span> },
+              { color: 'blue', children: <span>
+                <Typography.Text>
+                  {lang === 'zh'
+                    ? '两种模式共用 localhost:8080，前端无需改任何配置。刷新页面即可。'
+                    : 'Both modes share localhost:8080. No frontend config changes needed. Just refresh.'}
+                </Typography.Text>
+              </span> },
+            ]} />
+          </ProCard>
+
+          <ProCard size="small" title={lang === 'zh' ? '首次启动步骤（4 步）' : 'First-time Setup (4 steps)'}>
             <Timeline items={[
               { color: 'gray', children: <span>
                 <strong>{lang === 'zh' ? '第 0 步：进入项目根目录' : 'Step 0: Enter project root'}</strong>
