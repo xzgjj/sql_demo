@@ -1652,16 +1652,20 @@ function ProxyPage({ lang }: { lang: Lang }) {
               </span> },
               { color: 'blue', children: <span>
                 <strong>{lang === 'zh' ? '第 2 步：启动 mini-proxy' : 'Step 2: Start mini-proxy'}</strong>
-                <CodeBlock cmd='mvn -pl mini-proxy exec:java "-Dexec.mainClass=com.minidb.proxy.MiniProxyServer"' lang={lang} />
+                <CodeBlock cmd={'# 如果本机 MySQL 已占用 3306，先换端口：' + '\n$env:MINIDB_PROXY_PORT=13306' + '\n\n' + 'mvn -pl mini-proxy exec:java "-Dexec.mainClass=com.minidb.proxy.MiniProxyServer"'} lang={lang} />
                 <Typography.Text type="secondary">
-                  {lang === 'zh' ? 'Proxy 监听 3306（MySQL 协议）+ 4307（管理接口），连接到后端 MySQL 实例' : 'Proxy listens on 3306 (MySQL protocol) + 4307 (management API), connects to backend MySQL instances'}
+                  {lang === 'zh'
+                    ? 'Proxy 默认监听 3306。如果端口冲突（本机已装 MySQL），用 $env:MINIDB_PROXY_PORT 换到 13306。管理接口自动变为 13307。'
+                    : 'Proxy defaults to port 3306. If port conflicts (local MySQL installed), set $env:MINIDB_PROXY_PORT to change it (e.g. 13306). Management port auto-follows.'}
                 </Typography.Text>
               </span> },
               { color: 'green', children: <span>
-                <strong>{lang === 'zh' ? '第 3 步：order-api 切换到 proxy 模式' : 'Step 3: Switch order-api to proxy mode'}</strong>
-                <CodeBlock cmd='mvn -pl order-api spring-boot:run "-Dspring-boot.run.profiles=proxy"' lang={lang} />
+                <strong>{lang === 'zh' ? '第 3 步：order-api 切 proxy 模式（新终端）' : 'Step 3: order-api proxy mode (new terminal)'}</strong>
+                <CodeBlock cmd={'# 如果第 2 步换了端口，这里也必须一致：' + '\n$env:MINIDB_PROXY_PORT=13306' + '\n\n' + 'mvn -pl order-api spring-boot:run "-Dspring-boot.run.profiles=proxy"'} lang={lang} />
                 <Typography.Text type="secondary">
-                  {lang === 'zh' ? 'order-api 将通过 mini-proxy（4306 端口）访问数据库，本页可观测连接池、会话和路由决策' : 'order-api accesses databases via mini-proxy (port 4306), this page will show connection pools, sessions, and route decisions'}
+                  {lang === 'zh'
+                    ? '新开一个终端，cd 到项目根目录后执行。如果第 2 步改了端口，必须同步设置 MINIDB_PROXY_PORT。'
+                    : 'Open a new terminal, cd to project root, then run. If you changed the port in step 2, set MINIDB_PROXY_PORT to the same value.'}
                 </Typography.Text>
               </span> },
             ]} />
@@ -1670,10 +1674,16 @@ function ProxyPage({ lang }: { lang: Lang }) {
           <Alert
             type="warning"
             showIcon
-            message={lang === 'zh' ? '注意' : 'Note'}
+            message={lang === 'zh' ? '注意事项' : 'Notes'}
             description={lang === 'zh'
-              ? '切换到 proxy 模式后，订单写操作（创建/取消）将通过 2PC 协调器写入，读操作通过 proxy 路由。Dashboard 的全局聚合查询在 proxy 模式下不可用，需按 user_id 查询。'
-              : 'In proxy mode, order writes (create/cancel) use the 2PC coordinator, reads go through proxy routing. Dashboard global aggregation is unavailable in proxy mode — query by user_id instead.'}
+              ? '• port 冲突：本机 MySQL 默认占用 3306 → 用 $env:MINIDB_PROXY_PORT=13306 换端口\n'
+                + '• 第 2、3 步必须在不同终端窗口分别运行（都是长驻进程）\n'
+                + '• proxy 模式下订单写操作（创建/取消）通过 2PC 协调器写入，读操作通过 proxy 路由\n'
+                + '• Dashboard 全局聚合在 proxy 模式下不可用，需按 user_id 查询'
+              : '• Port conflict: local MySQL uses 3306 → set $env:MINIDB_PROXY_PORT=13306\n'
+                + '• Steps 2 & 3 must run in separate terminal windows (long-running processes)\n'
+                + '• In proxy mode, order writes use 2PC coordinator, reads go through proxy routing\n'
+                + '• Dashboard global aggregation unavailable in proxy mode — query by user_id'}
           />
         </Space>
       </Modal>
