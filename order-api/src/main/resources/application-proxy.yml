@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: jdbc:mysql://${MINIDB_PROXY_HOST:127.0.0.1}:${MINIDB_PROXY_PORT:4306}/${MINIDB_PRIMARY_DATABASE:minidb}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8&useServerPrepStmts=false
+    url: jdbc:mysql://${MINIDB_PROXY_HOST:127.0.0.1}:${MINIDB_PROXY_PORT:4306}/${MINIDB_PRIMARY_DATABASE:minidb}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8&useServerPrepStmts=false&defaultAuthenticationPlugin=mysql_native_password
     username: ${MINIDB_PROXY_USERNAME:proxy}
     password: ${MINIDB_PROXY_PASSWORD:proxy123}
 
