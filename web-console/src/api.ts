@@ -213,6 +213,7 @@ export const api = {
   proxySessions: () => request<ProxySessionsResult>('/api/proxy/sessions'),
   proxyPools: () => request<ProxyPoolsResult>('/api/proxy/pools'),
   proxyDecisions: (limit?: number, sessionId?: string) => request<ProxyDecisionsResult>(`/api/proxy/decisions?limit=${limit ?? 50}${sessionId ? `&sessionId=${sessionId}` : ''}`),
+  proxyStatus: () => request<ProxyStatus>('/api/runtime/proxy-status'),
 };
 
 export type ProxySessionsResult = {
@@ -228,6 +229,14 @@ export type ProxyPoolsResult = {
 export type ProxyDecisionsResult = {
   decisions: Array<{ sessionId: string; sql: string; keyType: string; keyValue: string; target: string; reason: string; status: string; elapsedMs: number }>;
   count: number;
+};
+
+export type ProxyStatus = {
+  proxyReachable: boolean;
+  proxyMode: boolean;
+  mode: string;
+  proxyMgmtUrl: string;
+  guide: string;
 };
 
 function pageParams(status?: number) {

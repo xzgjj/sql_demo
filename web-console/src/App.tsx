@@ -3,7 +3,7 @@ import { PageContainer, ProCard, ProTable } from '@ant-design/pro-components';
 import type { ProColumns } from '@ant-design/pro-components';
 import { Alert, Button, Descriptions, Drawer, Input, Layout, Menu, Modal, Progress, Radio, Segmented, Select, Skeleton, Space, Statistic, Tabs, Tag, Timeline, Typography, message } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, ProxyDecisionsResult, ProxyPoolsResult, ProxySessionsResult, RuntimeMode, TaskItem, clearApiKey, getApiKey, orderStatusText, setApiKey, taskStatusText } from './api';
+import { ApiError, api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, ProxyDecisionsResult, ProxyPoolsResult, ProxySessionsResult, ProxyStatus, RuntimeMode, TaskItem, clearApiKey, getApiKey, orderStatusText, setApiKey, taskStatusText } from './api';
 import { Lang, tr } from './i18n';
 
 const { Sider, Header, Content } = Layout;
@@ -1444,16 +1444,20 @@ function ProxyPage({ lang }: { lang: Lang }) {
   const [decisions, setDecisions] = useState<ProxyDecisionsResult>();
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatus>();
+  const [showGuide, setShowGuide] = useState(false);
 
   const reload = async () => {
     setLoading(true);
     const minWait = new Promise(r => setTimeout(r, 400));
     try {
-      const [p, s, d] = await Promise.all([
+      const [p, s, d, st] = await Promise.all([
         api.proxyPools(), api.proxySessions(), api.proxyDecisions(30),
+        api.proxyStatus(),
         minWait,
       ]);
       setPools(p); setSessions(s); setDecisions(d);
+      setProxyStatus(st);
       setLoaded(true);
     } catch (e) {
       message.error((e as Error).message);
@@ -1468,17 +1472,53 @@ function ProxyPage({ lang }: { lang: Lang }) {
   const totalMax = poolEntries.reduce((sum, [, v]) => sum + v.max, 0);
   const totalUsed = pools?.totalActive ?? 0;
 
+  const hasData = poolEntries.length > 0 || (sessions?.count ?? 0) > 0 || (decisions?.count ?? 0) > 0;
+
   return (
-    <PageContainer title={tr(lang, 'proxy')} extra={<Button type="primary" loading={loading} onClick={reload}>{tr(lang, 'refresh')}</Button>}>
+    <PageContainer title={tr(lang, 'proxy')} extra={
+      <Space>
+        {proxyStatus && (
+          <Tag color={proxyStatus.proxyMode && proxyStatus.proxyReachable ? 'green'
+            : proxyStatus.proxyReachable ? 'orange' : 'default'}>
+            {proxyStatus.proxyMode && proxyStatus.proxyReachable ? 'Proxy 模式'
+              : proxyStatus.proxyReachable ? 'Proxy 在线' : '直连模式'}
+          </Tag>
+        )}
+        <Button onClick={() => setShowGuide(true)}>
+          {lang === 'zh' ? '如何启用 Proxy' : 'Enable Proxy'}
+        </Button>
+        <Button type="primary" loading={loading} onClick={reload}>{tr(lang, 'refresh')}</Button>
+      </Space>
+    }>
       <Space direction="vertical" size={16} className="full">
-        {loaded && poolEntries.length === 0 && !sessions?.count && !decisions?.count && (
+        {/* Status banner */}
+        {loaded && !hasData && proxyStatus && (
           <Alert
-            type="info"
+            type={proxyStatus.proxyReachable ? 'warning' : 'info'}
             showIcon
-            message={lang === 'zh' ? 'Proxy 未运行或不可达' : 'Proxy not running or unreachable'}
+            message={proxyStatus.proxyReachable
+              ? (lang === 'zh' ? 'Proxy 在线但 order-api 为直连模式' : 'Proxy online but order-api in direct mode')
+              : (lang === 'zh' ? 'Proxy 未运行或不可达' : 'Proxy not running or unreachable')}
+            description={proxyStatus.guide}
+            action={
+              proxyStatus.proxyReachable && !proxyStatus.proxyMode
+                ? <Button size="small" type="primary" onClick={() => setShowGuide(true)}>
+                    {lang === 'zh' ? '查看切换步骤' : 'Switch Guide'}
+                  </Button>
+                : <Button size="small" onClick={() => setShowGuide(true)}>
+                    {lang === 'zh' ? '查看启动教程' : 'Setup Guide'}
+                  </Button>
+            }
+          />
+        )}
+        {loaded && hasData && (
+          <Alert
+            type="success"
+            showIcon
+            message={lang === 'zh' ? 'Proxy 模式运行中' : 'Proxy mode active'}
             description={lang === 'zh'
-              ? '当前为单库直连模式，Proxy 观测数据为空。启动 mini-proxy 后刷新即可看到连接池、会话和路由决策数据。'
-              : 'Currently in single-DB mode. Proxy observability data is empty. Start mini-proxy and refresh to see connection pools, sessions, and route decisions.'}
+              ? `mini-proxy 管理接口 ${proxyStatus?.proxyMgmtUrl || ':4307'} 响应正常`
+              : `mini-proxy management at ${proxyStatus?.proxyMgmtUrl || ':4307'} is responding`}
           />
         )}
         <div className="metric-grid">
@@ -1530,6 +1570,68 @@ function ProxyPage({ lang }: { lang: Lang }) {
           </ProCard>
         )}
       </Space>
+
+      <Modal
+        title={lang === 'zh' ? '如何启用 Proxy 模式' : 'How to Enable Proxy Mode'}
+        open={showGuide}
+        width={640}
+        onCancel={() => setShowGuide(false)}
+        footer={<Button type="primary" onClick={() => setShowGuide(false)}>{lang === 'zh' ? '知道了' : 'Got it'}</Button>}
+      >
+        <Space direction="vertical" size={16} className="full">
+          <Alert
+            type="info"
+            showIcon
+            message={lang === 'zh' ? '当前状态' : 'Current Status'}
+            description={proxyStatus?.guide || (lang === 'zh' ? '正在检测...' : 'Checking...')}
+          />
+
+          <ProCard size="small" title={lang === 'zh' ? 'Proxy 模式完整架构' : 'Proxy Mode Architecture'}>
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label={lang === 'zh' ? '工作原理' : 'How it works'}>
+                {lang === 'zh'
+                  ? 'order-api 不再直连 MySQL，而是通过 mini-proxy（MySQL 协议代理）转发所有 SQL。Proxy 根据 user_id % 4 将订单相关 SQL 路由到不同分片，同时记录路由决策供本页观测。'
+                  : 'order-api no longer connects directly to MySQL. Instead, all SQL goes through mini-proxy, which routes order queries to different shards based on user_id % 4, logging every routing decision for observability.'}
+              </Descriptions.Item>
+            </Descriptions>
+          </ProCard>
+
+          <ProCard size="small" title={lang === 'zh' ? '启动步骤（3 步）' : 'Startup Steps (3)'}>
+            <Timeline items={[
+              { color: 'blue', children: <span>
+                <strong>{lang === 'zh' ? '第 1 步：启动 MySQL 容器（6 个实例）' : 'Step 1: Start MySQL containers (6 instances)'}</strong>
+                <pre className="top-gap">docker compose up -d</pre>
+                <Typography.Text type="secondary">
+                  {lang === 'zh' ? '启动 PRIMARY、REPLICA、shard_0~3 共 6 个 MySQL 8.4 容器，端口 4407~4412' : 'Starts PRIMARY, REPLICA, shard_0~3 (6 MySQL 8.4 containers on ports 4407-4412)'}
+                </Typography.Text>
+              </span> },
+              { color: 'blue', children: <span>
+                <strong>{lang === 'zh' ? '第 2 步：启动 mini-proxy' : 'Step 2: Start mini-proxy'}</strong>
+                <pre className="top-gap">mvn -pl mini-proxy exec:java -Dexec.mainClass=com.minidb.proxy.MiniProxyServer</pre>
+                <Typography.Text type="secondary">
+                  {lang === 'zh' ? 'Proxy 监听 3306（MySQL 协议）+ 4307（管理接口），连接到后端 MySQL 实例' : 'Proxy listens on 3306 (MySQL protocol) + 4307 (management API), connects to backend MySQL instances'}
+                </Typography.Text>
+              </span> },
+              { color: 'green', children: <span>
+                <strong>{lang === 'zh' ? '第 3 步：order-api 切换到 proxy 模式' : 'Step 3: Switch order-api to proxy mode'}</strong>
+                <pre className="top-gap">mvn -pl order-api spring-boot:run -Dspring-boot.run.profiles=proxy</pre>
+                <Typography.Text type="secondary">
+                  {lang === 'zh' ? 'order-api 将通过 mini-proxy（4306 端口）访问数据库，本页可观测连接池、会话和路由决策' : 'order-api accesses databases via mini-proxy (port 4306), this page will show connection pools, sessions, and route decisions'}
+                </Typography.Text>
+              </span> },
+            ]} />
+          </ProCard>
+
+          <Alert
+            type="warning"
+            showIcon
+            message={lang === 'zh' ? '注意' : 'Note'}
+            description={lang === 'zh'
+              ? '切换到 proxy 模式后，订单写操作（创建/取消）将通过 2PC 协调器写入，读操作通过 proxy 路由。Dashboard 的全局聚合查询在 proxy 模式下不可用，需按 user_id 查询。'
+              : 'In proxy mode, order writes (create/cancel) use the 2PC coordinator, reads go through proxy routing. Dashboard global aggregation is unavailable in proxy mode — query by user_id instead.'}
+          />
+        </Space>
+      </Modal>
     </PageContainer>
   );
 }

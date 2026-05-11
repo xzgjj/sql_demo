@@ -66,4 +66,9 @@ public class ConsoleController {
             @RequestParam(name = "limit", defaultValue = "50") int limit) {
         return ResponseEntity.ok(ApiResponse.ok(consoleService.proxyDecisions(sessionId, limit)));
     }
+
+    @GetMapping("/runtime/proxy-status")
+    public ResponseEntity<ApiResponse<ConsoleService.ProxyStatus>> proxyStatus() {
+        return ResponseEntity.ok(ApiResponse.ok(consoleService.checkProxyStatus()));
+    }
 }

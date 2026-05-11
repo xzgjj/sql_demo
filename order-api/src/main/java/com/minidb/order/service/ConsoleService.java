@@ -786,4 +786,38 @@ public class ConsoleService {
     public record ProxySessionsResult(List<Map<String, Object>> sessions, int count) {}
     public record ProxyPoolsResult(Map<String, Object> pools, int totalActive) {}
     public record ProxyDecisionsResult(List<Map<String, Object>> decisions, int count) {}
+
+    public record ProxyStatus(boolean proxyReachable, boolean proxyMode, String mode,
+                               String proxyMgmtUrl, String guide) {}
+
+    public ProxyStatus checkProxyStatus() {
+        boolean reachable = false;
+        try {
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+                    new java.net.URL(proxyMgmtBaseUrl + "/health").openConnection();
+            conn.setConnectTimeout(2000);
+            conn.setReadTimeout(2000);
+            conn.setRequestMethod("GET");
+            int status = conn.getResponseCode();
+            conn.disconnect();
+            reachable = (status == 200);
+        } catch (Exception ignored) {}
+
+        String guide;
+        if (proxyMode && reachable) {
+            guide = "Proxy 模式已启用，mini-proxy 正常运行。可在本页查看连接池、会话和路由决策。";
+        } else if (proxyMode && !reachable) {
+            guide = "order-api 配置为 proxy 模式但 mini-proxy 未响应。请检查 mini-proxy 是否已启动。";
+        } else if (!proxyMode && reachable) {
+            guide = "mini-proxy 正在运行！但 order-api 当前为单库直连模式。要体验分片路由，请以 proxy profile 重启 order-api：mvn -pl order-api spring-boot:run -Dspring-boot.run.profiles=proxy";
+        } else {
+            guide = "当前为单库直连模式，mini-proxy 未运行。启动步骤：\n"
+                    + "1. docker compose up -d（启动 6 个 MySQL 容器）\n"
+                    + "2. mvn -pl mini-proxy exec:java -Dexec.mainClass=com.minidb.proxy.MiniProxyServer\n"
+                    + "3. mvn -pl order-api spring-boot:run -Dspring-boot.run.profiles=proxy";
+        }
+
+        return new ProxyStatus(reachable, proxyMode,
+                proxyMode ? "proxy" : "single-db", proxyMgmtBaseUrl, guide);
+    }
 }
