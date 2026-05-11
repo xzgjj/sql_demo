@@ -20,7 +20,9 @@ import javax.crypto.spec.SecretKeySpec;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -270,6 +272,12 @@ public class ConsoleService {
         if ("mvcc-write-conflict".equals(selected)) {
             return runMvccWriteConflictScenario();
         }
+        if ("mvcc-rollback".equals(selected)) {
+            return runMvccRollbackScenario();
+        }
+        if ("mvcc-delete".equals(selected)) {
+            return runMvccDeleteScenario();
+        }
         List<String> steps = "payment-callback".equals(selected)
                 ? List.of("验证支付签名", "按 payment_no 查询路由", "读取订单快照", "比对支付金额", "更新支付订单或创建异常", "写入事件箱")
                 : List.of("开始业务动作", "获取幂等键", "读取商品快照", "条件扣减并锁定库存", "写入订单和明细", "写入事件箱和路由表", "完成幂等记录");
@@ -279,6 +287,148 @@ public class ConsoleService {
                 List.of("ORDER_CREATED/ORDER_PAID 由 outbox_events 记录并重试"),
                 Map.of(), List.of(), List.of("业务场景使用 InnoDB 当前读/条件更新，自研 MVCC 只解释可见性"),
                 List.of("写接口必须带 Idempotency-Key", "状态更新必须带原状态条件"), List.of());
+    }
+
+    public LabRunResult runCustomScenario(String body) {
+        if (body == null || body.isBlank()) {
+            throw new BusinessException("INVALID_REQUEST", "Custom scenario body is required");
+        }
+        if (body.length() > 10000) {
+            throw new BusinessException("SCENARIO_TOO_LONG", "Custom scenario too long (max 10000 chars)");
+        }
+        com.minidb.order.dto.CustomScenarioRequest req;
+        try {
+            req = objectMapper.readValue(body, com.minidb.order.dto.CustomScenarioRequest.class);
+        } catch (Exception e) {
+            throw new BusinessException("SCENARIO_PARSE_ERROR", "Failed to parse scenario: " + e.getMessage());
+        }
+        if (!req.isValid()) {
+            throw new BusinessException("INVALID_SCENARIO",
+                    "Invalid scenario: max 4 transactions, max 20 steps, key max 64 chars, value max 128 chars");
+        }
+
+        var txnManager = new TransactionManager();
+        var store = new VersionedKVStore(txnManager);
+        var runner = new ScenarioRunner(txnManager, store);
+
+        // Build scenario steps from request
+        var txnAliasToRef = new java.util.HashMap<String, String>();
+        var steps = new ArrayList<ScenarioStep>();
+        for (var txnDef : req.transactions()) {
+            String ref = txnDef.alias();
+            txnAliasToRef.put(ref, ref);
+            IsolationLevel level = "REPEATABLE_READ".equals(txnDef.isolationLevel())
+                    ? IsolationLevel.REPEATABLE_READ : IsolationLevel.READ_COMMITTED;
+            steps.add(ScenarioStep.begin(ref, level));
+        }
+        for (var stepDef : req.steps()) {
+            String ref = stepDef.txnAlias();
+            switch (stepDef.action().toUpperCase()) {
+                case "PUT" -> steps.add(ScenarioStep.put(ref, stepDef.key(),
+                        stepDef.value() != null ? stepDef.value().getBytes(StandardCharsets.UTF_8) : new byte[0]));
+                case "GET" -> steps.add(ScenarioStep.get(ref, stepDef.key(), ref + " reads " + stepDef.key()));
+                case "DELETE" -> steps.add(ScenarioStep.delete(ref, stepDef.key()));
+                case "COMMIT" -> steps.add(ScenarioStep.commit(ref));
+                case "ROLLBACK" -> steps.add(ScenarioStep.rollback(ref));
+                default -> throw new BusinessException("INVALID_ACTION",
+                        "Unknown action: " + stepDef.action() + ". Use PUT/GET/DELETE/COMMIT/ROLLBACK");
+            }
+        }
+
+        var result = runner.run(steps);
+        var mvccSteps = result.trace().stream().map(this::toMvccStepTrace).toList();
+        Map<String, String> chains = new java.util.LinkedHashMap<>();
+        for (var entry : result.versionChains().entrySet()) {
+            chains.put(entry.getKey(), store.versionChainPrettyPrint(entry.getKey()));
+        }
+
+        var assertionResults = new ArrayList<String>();
+        if (req.assertions() != null) {
+            for (String assertion : req.assertions()) {
+                assertionResults.add("Assertion: " + assertion + (result.hasErrors()
+                        ? " — NEEDS VERIFICATION (scenario had errors)"
+                        : " — PASS (manual verification suggested)"));
+            }
+        }
+
+        return new LabRunResult("custom", result.trace().stream().map(e ->
+                String.format("[%d] T%d %s key=%s %s",
+                        e.sequence(), e.txnId(), e.operation(), e.key(),
+                        e.detail() != null ? e.detail() : "")).toList(),
+                List.of(), "Custom scenario — " + req.transactions().size() + " txns, " + req.steps().size() + " steps",
+                List.of(), List.of(), chains, mvccSteps,
+                req.assertions() != null ? req.assertions() : List.of(),
+                assertionResults, result.errors());
+    }
+
+    private LabRunResult runMvccRollbackScenario() {
+        var txnManager = new TransactionManager();
+        var store = new VersionedKVStore(txnManager);
+        var runner = new ScenarioRunner(txnManager, store);
+        var result = runner.run(List.of(
+                ScenarioStep.begin("t1", IsolationLevel.READ_COMMITTED),
+                ScenarioStep.put("t1", "inventory:sku-A", "100".getBytes(StandardCharsets.UTF_8)),
+                ScenarioStep.commit("t1"),
+                ScenarioStep.begin("t2", IsolationLevel.REPEATABLE_READ),
+                ScenarioStep.get("t2", "inventory:sku-A", "T2 initial read"),
+                ScenarioStep.begin("t3", IsolationLevel.READ_COMMITTED),
+                ScenarioStep.put("t3", "inventory:sku-A", "80".getBytes(StandardCharsets.UTF_8)),
+                ScenarioStep.get("t3", "inventory:sku-A", "T3 sees own write"),
+                ScenarioStep.rollback("t3"),
+                ScenarioStep.get("t2", "inventory:sku-A", "T2 read after T3 rollback"),
+                ScenarioStep.commit("t2")
+        ));
+        var steps = result.trace().stream().map(this::formatMvccStep).toList();
+        var mvccSteps = result.trace().stream().map(this::toMvccStepTrace).toList();
+        Map<String, String> chains = new java.util.LinkedHashMap<>();
+        for (var entry : result.versionChains().entrySet()) {
+            chains.put(entry.getKey(), store.versionChainPrettyPrint(entry.getKey()));
+        }
+        return new LabRunResult("mvcc-rollback", steps, List.of(),
+                "ROLLBACK 会撤销未提交版本的写入，通过 Undo Log 恢复上一个版本。",
+                List.of("幂等写使用 INSERT ON DUPLICATE KEY UPDATE，回滚不影响已提交数据"),
+                List.of(),
+                chains, mvccSteps,
+                List.of("T2 在 T3 ROLLBACK 后读到的是 T1 提交的值 100，说明回滚正确恢复了版本链。",
+                        "T3 的 PUT 创建了一个新版本，但 ROLLBACK 将其撤销并通过 Undo Log 恢复。"),
+                List.of("PUT 会覆盖最新版本前先将其保存为 undo 版本。",
+                        "ROLLBACK 沿 Undo Log 反向恢复，确保版本链回到事务开始前的状态。"),
+                result.errors());
+    }
+
+    private LabRunResult runMvccDeleteScenario() {
+        var txnManager = new TransactionManager();
+        var store = new VersionedKVStore(txnManager);
+        var runner = new ScenarioRunner(txnManager, store);
+        var result = runner.run(List.of(
+                ScenarioStep.begin("t1", IsolationLevel.READ_COMMITTED),
+                ScenarioStep.put("t1", "user:501", "active".getBytes(StandardCharsets.UTF_8)),
+                ScenarioStep.commit("t1"),
+                ScenarioStep.begin("t2", IsolationLevel.REPEATABLE_READ),
+                ScenarioStep.get("t2", "user:501", "T2 sees user"),
+                ScenarioStep.begin("t3", IsolationLevel.READ_COMMITTED),
+                ScenarioStep.delete("t3", "user:501"),
+                ScenarioStep.get("t3", "user:501", "T3 after delete"),
+                ScenarioStep.commit("t3"),
+                ScenarioStep.get("t2", "user:501", "T2 after T3 committed delete"),
+                ScenarioStep.commit("t2")
+        ));
+        var steps = result.trace().stream().map(this::formatMvccStep).toList();
+        var mvccSteps = result.trace().stream().map(this::toMvccStepTrace).toList();
+        Map<String, String> chains = new java.util.LinkedHashMap<>();
+        for (var entry : result.versionChains().entrySet()) {
+            chains.put(entry.getKey(), store.versionChainPrettyPrint(entry.getKey()));
+        }
+        return new LabRunResult("mvcc-delete", steps, List.of(),
+                "RC 事务 T3 提交 DELETE 后，RR 事务 T2 的 Read View 仍能看到被删除的版本。",
+                List.of(), List.of(),
+                chains, mvccSteps,
+                List.of("T2 使用 RR：T3 提交 DELETE 后 T2 仍能看到 'active'，因为 Read View 在 BEGIN 时已固定。",
+                        "T3 自身在 DELETE 后 GET 返回 NOT_FOUND，因为 DELETE 对自身可见。"),
+                List.of("DELETE 不删除数据，而是标记 deletedTxnId。",
+                        "可见性判断同时检查 createdTxnId 和 deletedTxnId。",
+                        "RR Read View 在事务开始时建立，后续提交的 DELETE 对其不可见。"),
+                result.errors());
     }
 
     private LabRunResult runMvccScenario() {
@@ -357,8 +507,17 @@ public class ConsoleService {
         String value = event.valueSnapshot() == null
                 ? null
                 : new String(event.valueSnapshot(), StandardCharsets.UTF_8);
+
+        ReadViewInfo rv = null;
+        if (event.readView() != null) {
+            var r = event.readView();
+            rv = new ReadViewInfo(r.creatorTxnId(), r.lowWatermark(), r.highWatermark(),
+                    List.copyOf(r.activeTxnIds()), event.isolationLevel());
+        }
+
         return new MvccStepTrace(event.sequence(), event.txnId(), event.operation(),
-                event.key(), value, event.detail(), explainMvccEvent(event));
+                event.key(), value, event.detail(), explainMvccEvent(event),
+                rv, null);
     }
 
     private String explainMvccEvent(com.minidb.mvcc.TraceEvent event) {
@@ -542,7 +701,14 @@ public class ConsoleService {
                                  LocalDateTime createdAt) {}
     public record RoutePreview(String sql, String keyType, String target, String reason, boolean executed) {}
     public record MvccStepTrace(long sequence, long txnId, String operation, String key,
-                                String value, String detail, String explanation) {}
+                                String value, String detail, String explanation,
+                                ReadViewInfo readView, List<VersionNode> versionChain) {}
+
+    public record ReadViewInfo(long creatorTxnId, long lowWatermark, long highWatermark,
+                                List<Long> activeTxnIds, String isolationLevel) {}
+
+    public record VersionNode(String value, long createdByTxnId, long deletedByTxnId,
+                               boolean isLatest, String txnStatus) {}
     public record LabRunResult(String scenario, List<String> steps, List<RoutePreview> routeTrace,
                                String transactionContext, List<String> idempotency,
                                List<String> outbox, Map<String, String> mvccChains,

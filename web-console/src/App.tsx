@@ -783,14 +783,36 @@ function Exceptions({ lang }: { lang: Lang }) {
 }
 
 function Lab({ lang }: { lang: Lang }) {
-  const [scenario, setScenario] = useState('create-order');
+  const [scenario, setScenario] = useState('mvcc-rc-rr');
   const [result, setResult] = useState<LabRunResult>();
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string>();
+  // Custom scenario state
+  const [customTxns, setCustomTxns] = useState<Array<{ alias: string; isolationLevel: string }>>([
+    { alias: 't1', isolationLevel: 'REPEATABLE_READ' },
+    { alias: 't2', isolationLevel: 'READ_COMMITTED' },
+  ]);
+  const [customSteps, setCustomSteps] = useState<Array<{ txnAlias: string; action: string; key: string; value: string }>>([
+    { txnAlias: 't1', action: 'PUT', key: 'k1', value: 'hello' },
+    { txnAlias: 't1', action: 'COMMIT', key: '', value: '' },
+    { txnAlias: 't2', action: 'GET', key: 'k1', value: '' },
+    { txnAlias: 't2', action: 'COMMIT', key: '', value: '' },
+  ]);
+  const [customAssertions, setCustomAssertions] = useState('T2 should read "hello"');
+
   const run = async () => {
     setRunning(true);
     try {
-      setResult(await api.runScenario(scenario));
+      if (scenario === 'custom') {
+        const body = JSON.stringify({
+          transactions: customTxns,
+          steps: customSteps.filter(s => s.txnAlias && s.action),
+          assertions: customAssertions.split('\n').filter(a => a.trim()),
+        });
+        setResult(await api.runScenario('custom', body));
+      } else {
+        setResult(await api.runScenario(scenario));
+      }
       setError(undefined);
     } catch (e) {
       const text = formatApiError(e, lang);
@@ -800,6 +822,17 @@ function Lab({ lang }: { lang: Lang }) {
       setRunning(false);
     }
   };
+
+  const scenarioOptions = [
+    { value: 'create-order', label: lang === 'zh' ? '创建订单：库存锁定、幂等、outbox、路由表' : 'Create Order' },
+    { value: 'payment-callback', label: lang === 'zh' ? '支付回调：验签、金额校验、异常工单' : 'Payment Callback' },
+    { value: 'mvcc-rc-rr', label: lang === 'zh' ? 'MVCC：RC / RR Read View 对比' : 'MVCC RC vs RR' },
+    { value: 'mvcc-write-conflict', label: lang === 'zh' ? 'MVCC：写写冲突保护最新版本' : 'MVCC Write Conflict' },
+    { value: 'mvcc-rollback', label: lang === 'zh' ? 'MVCC：ROLLBACK 与版本链恢复' : 'MVCC Rollback & Chain Restore' },
+    { value: 'mvcc-delete', label: lang === 'zh' ? 'MVCC：DELETE 可见性（RC vs RR）' : 'MVCC Delete Visibility' },
+    { value: 'custom', label: lang === 'zh' ? '自定义实验（构建你自己的 MVCC 场景）' : 'Custom Experiment' },
+  ];
+
   return (
     <PageContainer title={tr(lang, 'lab')} extra={<Button type="primary" loading={running} onClick={run}>{tr(lang, 'run')}</Button>}>
       <Space direction="vertical" size={16} className="full">
@@ -809,25 +842,78 @@ function Lab({ lang }: { lang: Lang }) {
           <ProCard title="PRIMARY"><Tag color="blue">{lang === 'zh' ? '元数据' : 'metadata'}</Tag><p>products / outbox / idempotency / order_route</p></ProCard>
           <ProCard title="shard_0~3"><Tag color="purple">user_id % 4</Tag><p>orders / payments / fulfillment</p></ProCard>
         </div>
-        <div className="two-col">
+        <div className={scenario === 'custom' ? 'full' : 'two-col'}>
           <ProCard title={lang === 'zh' ? '场景选择' : 'Scenario'}>
             <Space direction="vertical" className="full">
-              <Select value={scenario} className="full" onChange={setScenario} options={[
-                { value: 'create-order', label: lang === 'zh' ? '创建订单：库存锁定、幂等、outbox、路由表' : 'Create Order' },
-                { value: 'payment-callback', label: lang === 'zh' ? '支付回调：验签、金额校验、异常工单' : 'Payment Callback' },
-                { value: 'mvcc-rc-rr', label: lang === 'zh' ? 'MVCC：RC / RR Read View 对比' : 'MVCC RC vs RR' },
-                { value: 'mvcc-write-conflict', label: lang === 'zh' ? 'MVCC：写写冲突保护最新版本' : 'MVCC Write Conflict' },
-              ]} />
+              <Select value={scenario} className="full" onChange={(v) => setScenario(v)} options={scenarioOptions} />
             </Space>
           </ProCard>
-          <ProCard title={lang === 'zh' ? '接口契约' : 'API Contract'}>
-            <Descriptions column={1} size="small">
-              <Descriptions.Item label={lang === 'zh' ? '运行' : 'Run'}><code>POST /api/lab/scenarios/{'{scenario}'}/run</code></Descriptions.Item>
-              <Descriptions.Item label={lang === 'zh' ? '返回' : 'Return'}><code>steps, routeTrace, transactionContext, idempotency, outbox, mvccChains</code></Descriptions.Item>
-              <Descriptions.Item label={lang === 'zh' ? '状态' : 'Status'}><Tag color="green">{lang === 'zh' ? '阶段六接口就绪' : 'Phase 6 API Ready'}</Tag></Descriptions.Item>
-            </Descriptions>
-          </ProCard>
+          {scenario !== 'custom' && (
+            <ProCard title={lang === 'zh' ? '接口契约' : 'API Contract'}>
+              <Descriptions column={1} size="small">
+                <Descriptions.Item label={lang === 'zh' ? '运行' : 'Run'}><code>POST /api/lab/scenarios/{'{scenario}'}/run</code></Descriptions.Item>
+                <Descriptions.Item label={lang === 'zh' ? '返回' : 'Return'}><code>steps, mvccSteps, mvccChains, readViews, assertions, errors</code></Descriptions.Item>
+                <Descriptions.Item label={lang === 'zh' ? '状态' : 'Status'}><Tag color="green">{lang === 'zh' ? 'v11 接口就绪' : 'v11 API Ready'}</Tag></Descriptions.Item>
+              </Descriptions>
+            </ProCard>
+          )}
         </div>
+
+        {/* Custom Scenario Builder */}
+        {scenario === 'custom' && (
+          <ProCard title={lang === 'zh' ? '自定义实验定义' : 'Custom Experiment Definition'}>
+            <Space direction="vertical" className="full" size={12}>
+              <ProCard size="small" title={lang === 'zh' ? '事务定义 (max 4)' : 'Transactions (max 4)'}>
+                {customTxns.map((txn, i) => (
+                  <Space key={i} className="bottom-gap-small" wrap>
+                    <Input placeholder="alias" value={txn.alias} style={{ width: 80 }}
+                      onChange={(e) => { const n = [...customTxns]; n[i] = { ...n[i], alias: e.target.value }; setCustomTxns(n); }} />
+                    <Select value={txn.isolationLevel} style={{ width: 180 }}
+                      onChange={(v) => { const n = [...customTxns]; n[i] = { ...n[i], isolationLevel: v }; setCustomTxns(n); }}
+                      options={[{ value: 'READ_COMMITTED', label: 'READ_COMMITTED (RC)' }, { value: 'REPEATABLE_READ', label: 'REPEATABLE_READ (RR)' }]} />
+                    <Button size="small" danger onClick={() => setCustomTxns(customTxns.filter((_, j) => j !== i))}>×</Button>
+                  </Space>
+                ))}
+                <Button size="small" onClick={() => setCustomTxns([...customTxns, { alias: `t${customTxns.length + 1}`, isolationLevel: 'READ_COMMITTED' }])}
+                  disabled={customTxns.length >= 4}>
+                  + {lang === 'zh' ? '添加事务' : 'Add Transaction'}
+                </Button>
+              </ProCard>
+
+              <ProCard size="small" title={lang === 'zh' ? '步骤定义 (max 20)' : 'Steps (max 20)'}>
+                {customSteps.map((step, i) => (
+                  <Space key={i} className="bottom-gap-small" wrap>
+                    <Input placeholder="txn" value={step.txnAlias} style={{ width: 70 }}
+                      onChange={(e) => { const n = [...customSteps]; n[i] = { ...n[i], txnAlias: e.target.value }; setCustomSteps(n); }} />
+                    <Select value={step.action} style={{ width: 110 }}
+                      onChange={(v) => { const n = [...customSteps]; n[i] = { ...n[i], action: v }; setCustomSteps(n); }}
+                      options={['PUT', 'GET', 'DELETE', 'COMMIT', 'ROLLBACK'].map(a => ({ value: a, label: a }))} />
+                    {['PUT', 'GET', 'DELETE'].includes(step.action) && (
+                      <Input placeholder="key" value={step.key} style={{ width: 120 }}
+                        onChange={(e) => { const n = [...customSteps]; n[i] = { ...n[i], key: e.target.value }; setCustomSteps(n); }} />
+                    )}
+                    {step.action === 'PUT' && (
+                      <Input placeholder="value" value={step.value} style={{ width: 100 }}
+                        onChange={(e) => { const n = [...customSteps]; n[i] = { ...n[i], value: e.target.value }; setCustomSteps(n); }} />
+                    )}
+                    <Button size="small" danger onClick={() => setCustomSteps(customSteps.filter((_, j) => j !== i))}>×</Button>
+                  </Space>
+                ))}
+                <Button size="small" onClick={() => setCustomSteps([...customSteps, { txnAlias: '', action: 'GET', key: '', value: '' }])}
+                  disabled={customSteps.length >= 20}>
+                  + {lang === 'zh' ? '添加步骤' : 'Add Step'}
+                </Button>
+              </ProCard>
+
+              <ProCard size="small" title={lang === 'zh' ? '断言（每行一个）' : 'Assertions (one per line)'}>
+                <Input.TextArea rows={3} value={customAssertions}
+                  onChange={(e) => setCustomAssertions(e.target.value)}
+                  placeholder={lang === 'zh' ? 'T2 should read "hello"\nT3 should get WriteConflictException' : 'T2 should read "hello"\nT3 should get WriteConflictException'} />
+              </ProCard>
+            </Space>
+          </ProCard>
+        )}
+
         {error && <Alert type="error" showIcon message={lang === 'zh' ? '实验运行失败' : 'Lab scenario failed'} description={error} />}
         {result && <LabResult lang={lang} result={result} />}
       </Space>
@@ -836,7 +922,8 @@ function Lab({ lang }: { lang: Lang }) {
 }
 
 function LabResult({ lang, result }: { lang: Lang; result: LabRunResult }) {
-  const mvccRows = (result.mvccSteps ?? []).map((step) => ({ ...step, rowKey: `${step.sequence}-${step.operation}` }));
+  const mvccRows = (result.mvccSteps ?? []).map((step, i) => ({ ...step, rowKey: `${i}-${step.operation}` }));
+  const hasReadView = mvccRows.some(r => r.readView);
   return (
     <Space direction="vertical" className="full" size={16}>
       <div className="metric-grid">
@@ -856,30 +943,68 @@ function LabResult({ lang, result }: { lang: Lang; result: LabRunResult }) {
           label: lang === 'zh' ? 'MVCC 细节' : 'MVCC Details',
           children: mvccRows.length ? (
             <ProTable rowKey="rowKey" search={false} pagination={false} dataSource={mvccRows} columns={[
-              { title: '#', dataIndex: 'sequence', width: 64 },
-              { title: 'txn', dataIndex: 'txnId', width: 80 },
-              { title: lang === 'zh' ? '动作' : 'Operation', dataIndex: 'operation', width: 110, render: (_, r) => <Tag color={r.operation === 'ERROR' ? 'red' : 'blue'}>{r.operation}</Tag> },
-              { title: 'key', dataIndex: 'key', ellipsis: true },
-              { title: lang === 'zh' ? '读值' : 'Value', dataIndex: 'value', ellipsis: true },
-              { title: lang === 'zh' ? '为什么' : 'Why', dataIndex: 'explanation', ellipsis: true },
+              { title: '#', dataIndex: 'sequence', width: 48 },
+              { title: 'Txn', dataIndex: 'txnId', width: 64, render: (_, r) => <Tag>T{r.txnId}</Tag> },
+              { title: lang === 'zh' ? '动作' : 'Op', dataIndex: 'operation', width: 80, render: (_, r) => {
+                const colors: Record<string, string> = { BEGIN: 'blue', PUT: 'orange', GET: 'green', DELETE: 'red', COMMIT: 'purple', ROLLBACK: 'magenta', ERROR: 'red' };
+                return <Tag color={colors[r.operation] || 'default'}>{r.operation}</Tag>;
+              }},
+              { title: 'Key', dataIndex: 'key', width: 100, ellipsis: true },
+              { title: lang === 'zh' ? '值' : 'Value', dataIndex: 'value', width: 100, ellipsis: true },
+              { title: lang === 'zh' ? '解释' : 'Why', dataIndex: 'explanation', ellipsis: true },
             ]} />
-          ) : <TracePanel lang={lang} trace={{ transactionContext: result.transactionContext, sqlHistory: [], outbox: result.outbox, idempotency: result.idempotency, routeTable: result.routeTrace, timeline: [], route: '', order: { orderId: 0, orderNo: '', userId: 0, status: 0, totalAmount: 0, paidAmount: 0 } }} />,
+          ) : <Alert message={lang === 'zh' ? '无步骤数据' : 'No step data'} type="info" />,
         },
         {
           key: 'readview',
           label: 'Read View',
-          children: (
+          children: hasReadView ? (
+            <ProTable rowKey="sequence" search={false} pagination={false}
+              dataSource={mvccRows.filter(r => r.readView).map(r => ({
+                sequence: r.sequence,
+                txnId: `T${r.txnId}`,
+                operation: r.operation,
+                key: r.key || '-',
+                isolation: r.readView!.isolationLevel,
+                creator: `T${r.readView!.creatorTxnId}`,
+                low: r.readView!.lowWatermark,
+                high: r.readView!.highWatermark,
+                activeCount: r.readView!.activeTxnIds.length,
+                activeTxns: r.readView!.activeTxnIds.join(', '),
+                detail: r.detail,
+              }))}
+              columns={[
+                { title: '#', dataIndex: 'sequence', width: 40 },
+                { title: 'Txn', dataIndex: 'txnId', width: 56 },
+                { title: lang === 'zh' ? '隔离级别' : 'Isolation', dataIndex: 'isolation', width: 56, render: (_, r) => <Tag color={r.isolation === 'REPEATABLE_READ' ? 'purple' : 'blue'}>{r.isolation === 'REPEATABLE_READ' ? 'RR' : 'RC'}</Tag> },
+                { title: 'Creator', dataIndex: 'creator', width: 60 },
+                { title: lang === 'zh' ? '下限' : 'Low', dataIndex: 'low', width: 52 },
+                { title: lang === 'zh' ? '上限' : 'High', dataIndex: 'high', width: 52 },
+                { title: lang === 'zh' ? '活跃数' : 'Active#', dataIndex: 'activeCount', width: 60 },
+                { title: lang === 'zh' ? '活跃事务' : 'Active Txns', dataIndex: 'activeTxns', width: 180, ellipsis: true },
+              ]}
+            />
+          ) : (
             <Space direction="vertical" className="full">
               {(result.readViews ?? []).map((item) => <Alert key={item} type="info" message={item} />)}
+            </Space>
+          ),
+        },
+        {
+          key: 'assertions',
+          label: lang === 'zh' ? '断言 & 错误' : 'Assertions & Errors',
+          children: (
+            <Space direction="vertical" className="full">
               {(result.assertions ?? []).map((item) => <Alert key={item} type="success" message={item} />)}
               {(result.errors ?? []).map((item) => <Alert key={item} type="error" message={item} />)}
+              {!result.assertions?.length && !result.errors?.length && <Alert type="info" message={lang === 'zh' ? '无断言或错误' : 'No assertions or errors'} />}
             </Space>
           ),
         },
         {
           key: 'chains',
           label: lang === 'zh' ? '版本链' : 'Version Chains',
-          children: <pre>{Object.entries(result.mvccChains ?? {}).map(([key, value]) => `${key}\n${value}`).join('\n\n') || (lang === 'zh' ? '无版本链数据' : 'No version chain data')}</pre>,
+          children: <pre className="trace-pre">{Object.entries(result.mvccChains ?? {}).map(([key, value]) => `${key}\n${value}`).join('\n\n') || (lang === 'zh' ? '无版本链数据' : 'No version chain data')}</pre>,
         },
       ]} />
     </Space>
@@ -1212,28 +1337,6 @@ function Settings({ lang, health, runtimeMode }: { lang: Lang; health: string; r
     </PageContainer>
   );
 }
-
-type TraceView = Partial<Omit<OrderTrace, 'outbox' | 'idempotency' | 'routeTable'>> & {
-  routeTable?: unknown[];
-  idempotency?: unknown[];
-  outbox?: unknown[];
-};
-
-function TracePanel({ lang, trace }: { lang: Lang; trace?: TraceView }) {
-  if (!trace) return <Alert message={lang === 'zh' ? '链路加载中' : 'Trace loading'} type="info" />;
-  return (
-    <Space direction="vertical" className="full">
-      <Alert message={trace.route || trace.transactionContext} type="success" />
-      <Tabs items={[
-        { key: 'route', label: lang === 'zh' ? 'SQL 路由' : 'SQL Route', children: <pre>{JSON.stringify(trace.routeTable ?? [], null, 2)}</pre> },
-        { key: 'idempotency', label: lang === 'zh' ? '幂等记录' : 'Idempotency', children: <pre>{JSON.stringify(trace.idempotency ?? [], null, 2)}</pre> },
-        { key: 'outbox', label: lang === 'zh' ? '事件箱' : 'Outbox', children: <pre>{JSON.stringify(trace.outbox ?? [], null, 2)}</pre> },
-        { key: 'sql', label: lang === 'zh' ? 'SQL 历史' : 'SQL History', children: <pre>{(trace.sqlHistory ?? []).join('\n')}</pre> },
-      ]} />
-    </Space>
-  );
-}
-
 function PaymentSummary({ lang, order }: { lang: Lang; order: OrderDetail }) {
   if (!order.payment) return <EmptyText lang={lang} />;
   return (

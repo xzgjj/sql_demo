@@ -31,8 +31,9 @@ public class ScenarioRunner {
                                 ? step.isolationLevel() : IsolationLevel.READ_COMMITTED;
                         Transaction txn = txnManager.begin(level);
                         transactions.put(step.transactionRef(), txn);
+                        ReadView rv = txn.readView();
                         trace.add(new TraceEvent(seq, txn.txnId(), "BEGIN", "", null,
-                                "isolation=" + level));
+                                "isolation=" + level, rv, level.name()));
                     }
                     case PUT -> {
                         Transaction txn = transactions.get(step.transactionRef());
@@ -42,14 +43,18 @@ public class ScenarioRunner {
                     }
                     case GET -> {
                         Transaction txn = transactions.get(step.transactionRef());
+                        ReadView rv = txn.readView();
                         Optional<byte[]> result = store.get(txn, step.key());
                         String label = step.label() != null ? step.label() : "";
+                        String isolation = txn.isolationLevel().name();
                         if (result.isPresent()) {
                             trace.add(new TraceEvent(seq, txn.txnId(), "GET", step.key(),
-                                    result.get(), label + " => " + str(result.get())));
+                                    result.get(), label + " => " + str(result.get()),
+                                    rv, isolation));
                         } else {
                             trace.add(new TraceEvent(seq, txn.txnId(), "GET", step.key(),
-                                    null, label + " => NOT_FOUND"));
+                                    null, label + " => NOT_FOUND",
+                                    rv, isolation));
                         }
                     }
                     case DELETE -> {

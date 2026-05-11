@@ -98,10 +98,38 @@ export type LabRunResult = {
   idempotency: string[];
   outbox: string[];
   mvccChains: Record<string, string>;
-  mvccSteps: Array<{ sequence: number; txnId: number; operation: string; key?: string; value?: string; detail?: string; explanation: string }>;
+  mvccSteps: Array<MvccStepDetail>;
   readViews: string[];
   assertions: string[];
   errors: string[];
+};
+
+export type MvccStepDetail = {
+  sequence: number;
+  txnId: number;
+  operation: string;
+  key?: string;
+  value?: string;
+  detail?: string;
+  explanation: string;
+  readView?: ReadViewInfo | null;
+  versionChain?: VersionNode[] | null;
+};
+
+export type ReadViewInfo = {
+  creatorTxnId: number;
+  lowWatermark: number;
+  highWatermark: number;
+  activeTxnIds: number[];
+  isolationLevel: string;
+};
+
+export type VersionNode = {
+  value: string;
+  createdByTxnId: number;
+  deletedByTxnId: number;
+  isLatest: boolean;
+  txnStatus: string;
 };
 
 export type RuntimeMode = {
@@ -181,7 +209,7 @@ export const api = {
   resolve: (id: number, resolution: string) => request<void>(`/api/exceptions/${id}/resolve`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ resolution }) }),
   trace: (orderId: number) => request<OrderTrace>(`/api/audit/orders/${orderId}/trace`),
   routePreview: (sql: string) => request<Record<string, unknown>>(`/api/proxy/routes/preview?sql=${encodeURIComponent(sql)}`),
-  runScenario: (scenario: string) => request<LabRunResult>(`/api/lab/scenarios/${scenario}/run`, { method: 'POST', body: JSON.stringify({}) }),
+  runScenario: (scenario: string, body?: string) => request<LabRunResult>(`/api/lab/scenarios/${scenario}/run`, { method: 'POST', body: body ?? JSON.stringify({}) }),
   proxySessions: () => request<ProxySessionsResult>('/api/proxy/sessions'),
   proxyPools: () => request<ProxyPoolsResult>('/api/proxy/pools'),
   proxyDecisions: (limit?: number, sessionId?: string) => request<ProxyDecisionsResult>(`/api/proxy/decisions?limit=${limit ?? 50}${sessionId ? `&sessionId=${sessionId}` : ''}`),

@@ -45,7 +45,10 @@ public class ConsoleController {
     @PostMapping("/lab/scenarios/{scenario}/run")
     public ResponseEntity<ApiResponse<ConsoleService.LabRunResult>> runScenario(
             @PathVariable("scenario") String scenario,
-            @RequestBody(required = false) Map<String, String> body) {
+            @RequestBody(required = false) String body) {
+        if ("custom".equals(scenario)) {
+            return ResponseEntity.ok(ApiResponse.ok(consoleService.runCustomScenario(body)));
+        }
         return ResponseEntity.ok(ApiResponse.ok(consoleService.runLabScenario(scenario)));
     }
 
