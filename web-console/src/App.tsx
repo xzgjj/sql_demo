@@ -1443,15 +1443,22 @@ function ProxyPage({ lang }: { lang: Lang }) {
   const [sessions, setSessions] = useState<ProxySessionsResult>();
   const [decisions, setDecisions] = useState<ProxyDecisionsResult>();
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   const reload = async () => {
     setLoading(true);
+    const minWait = new Promise(r => setTimeout(r, 400));
     try {
       const [p, s, d] = await Promise.all([
         api.proxyPools(), api.proxySessions(), api.proxyDecisions(30),
+        minWait,
       ]);
       setPools(p); setSessions(s); setDecisions(d);
-    } catch (e) { message.error((e as Error).message); }
+      setLoaded(true);
+    } catch (e) {
+      message.error((e as Error).message);
+      setLoaded(true);
+    }
     finally { setLoading(false); }
   };
 
@@ -1464,6 +1471,16 @@ function ProxyPage({ lang }: { lang: Lang }) {
   return (
     <PageContainer title={tr(lang, 'proxy')} extra={<Button type="primary" loading={loading} onClick={reload}>{tr(lang, 'refresh')}</Button>}>
       <Space direction="vertical" size={16} className="full">
+        {loaded && poolEntries.length === 0 && !sessions?.count && !decisions?.count && (
+          <Alert
+            type="info"
+            showIcon
+            message={lang === 'zh' ? 'Proxy 未运行或不可达' : 'Proxy not running or unreachable'}
+            description={lang === 'zh'
+              ? '当前为单库直连模式，Proxy 观测数据为空。启动 mini-proxy 后刷新即可看到连接池、会话和路由决策数据。'
+              : 'Currently in single-DB mode. Proxy observability data is empty. Start mini-proxy and refresh to see connection pools, sessions, and route decisions.'}
+          />
+        )}
         <div className="metric-grid">
           <ProCard><Statistic title={lang === 'zh' ? '会话数' : 'Sessions'} value={sessions?.count ?? '-'} /></ProCard>
           <ProCard><Statistic title={lang === 'zh' ? '活跃连接' : 'Active Connections'} value={totalUsed} suffix={`/ ${totalMax}`} /></ProCard>

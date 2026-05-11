@@ -4,7 +4,7 @@ const dict = {
   zh: {
     app: 'MiniDB-Lab 控制台',
     businessTerminal: '订单履约终端',
-    databaseTerminal: '数据库实验终端',
+    databaseTerminal: '数据库终端',
     dashboard: '指挥台',
     orders: '订单队列',
     fulfillment: '履约工作台',
@@ -12,7 +12,7 @@ const dict = {
     businessOps: '业务运营',
     dbLabGroup: '数据库实验',
     systemGroup: '系统',
-    lab: '数据库实验台',
+    lab: '数据库实验',
     trace: '链路追踪',
     routePreview: 'SQL 路由预览',
     proxy: 'Proxy 观测',
