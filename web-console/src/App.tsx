@@ -5,6 +5,7 @@ import { Alert, Button, Descriptions, Drawer, Input, Layout, Menu, Modal, Progre
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, api, DashboardSummary, ExceptionItem, LabRunResult, OrderDetail, OrderSummary, OrderTrace, ProxyDecisionsResult, ProxyPoolsResult, ProxySessionsResult, ProxyStatus, RuntimeMode, TaskItem, clearApiKey, getApiKey, orderStatusText, setApiKey, taskStatusText } from './api';
 import { Lang, tr } from './i18n';
+import { EmptyText, exceptionStatusText, formatApiError, healthText, prettyJson, suggestedAction } from './components/helpers';
 
 const { Sider, Header, Content } = Layout;
 
@@ -1398,23 +1399,6 @@ function Rule({ label, value }: { label: string; value: string }) {
   );
 }
 
-function suggestedAction(reasonCode: string, lang: Lang) {
-  if (reasonCode.includes('AMOUNT')) return lang === 'zh' ? '核对支付流水，禁止自动置成功' : 'Verify payment ledger';
-  if (reasonCode.includes('ROUTE')) return lang === 'zh' ? '检查 order_route 并按 user_id 复查' : 'Check order_route and user_id';
-  if (reasonCode.includes('OUTBOX')) return lang === 'zh' ? '检查重试次数和下游处理器' : 'Check retry and consumers';
-  return lang === 'zh' ? '人工复核证据后处理' : 'Manual review';
-}
-
-function healthText(health: string, lang: Lang) {
-  if (health === 'ready') return lang === 'zh' ? '接口就绪' : 'API Ready';
-  if (health === 'checking') return lang === 'zh' ? '检查中' : 'Checking';
-  return lang === 'zh' ? '接口异常' : 'API Error';
-}
-
-function EmptyText({ lang }: { lang: Lang }) {
-  return <Typography.Text type="secondary">{tr(lang, 'empty')}</Typography.Text>;
-}
-
 function CodeBlock({ cmd, lang }: { cmd: string; lang: Lang }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -1447,29 +1431,6 @@ function CodeBlock({ cmd, lang }: { cmd: string; lang: Lang }) {
       </Button>
     </div>
   );
-}
-
-function formatApiError(error: unknown, lang: Lang) {
-  if (error instanceof ApiError) {
-    const prefix = error.errorCode ? `[${error.errorCode}] ` : `[HTTP ${error.status}] `;
-    return prefix + error.message;
-  }
-  return error instanceof Error ? error.message : (lang === 'zh' ? '未知错误' : 'Unknown error');
-}
-
-function exceptionStatusText(status: number, lang: Lang) {
-  const zh = { 10: '待处理', 20: '处理中', 30: '已解决', 40: '已关闭' } as Record<number, string>;
-  const en = { 10: 'Open', 20: 'In Progress', 30: 'Resolved', 40: 'Closed' } as Record<number, string>;
-  return (lang === 'zh' ? zh : en)[status] ?? String(status);
-}
-
-function prettyJson(value: string) {
-  if (!value) return '{}';
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
 }
 
 function ProxyPage({ lang }: { lang: Lang }) {

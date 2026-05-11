@@ -69,8 +69,8 @@ describe('App', () => {
   it('renders database terminal from direct URL', async () => {
     window.history.replaceState(null, '', '/database/lab');
     render(<App />);
-    expect(await screen.findAllByText('数据库实验终端')).toBeTruthy();
-    expect(await screen.findAllByText('数据库实验台')).toBeTruthy();
+    expect(await screen.findAllByText('数据库终端')).toBeTruthy();
+    expect(await screen.findAllByText('MVCC 演示')).toBeTruthy();
   });
 
 });
