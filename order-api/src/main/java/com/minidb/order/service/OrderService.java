@@ -254,7 +254,7 @@ public class OrderService {
 
     @Transactional
     public void cancelOrder(Long orderId, String reason, String idempotencyKey, Long operatorId) {
-        rejectProxyWrite("cancel orders");
+        String traceId = TraceContext.generate();
         String reqJson;
         try { reqJson = objectMapper.writeValueAsString(Map.of("orderId", orderId, "reason", reason)); }
         catch (Exception e) { throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize cancel request"); }
@@ -262,6 +262,7 @@ public class OrderService {
         if (cached != null) return;
 
         try {
+            // Read order info (via proxy in proxy mode, direct in single-DB)
             var order = Objects.requireNonNull(proxyMode
                 ? jdbc.query("SELECT order_no, user_id, status, version FROM orders WHERE id = ? AND user_id = ?",
                     rs -> { if (!rs.next()) throw new BusinessException("ORDER_NOT_FOUND", "Order not found: " + orderId);
@@ -275,37 +276,147 @@ public class OrderService {
             long userId = (long) order[1];
             int currentStatus = (int) order[2];
 
-            if (currentStatus == OrderStatus.PENDING_PAYMENT.getCode()) {
-                var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ? AND user_id = ?",
+            // Validate cancellable states
+            if (currentStatus == OrderStatus.SHIPPED.getCode()) {
+                throw new BusinessException("ORDER_STATUS_CHANGED", "Cannot cancel shipped order");
+            }
+            if (currentStatus != OrderStatus.PENDING_PAYMENT.getCode()
+                    && currentStatus != OrderStatus.PAID.getCode()) {
+                throw new BusinessException("ORDER_STATUS_CHANGED",
+                        "Cannot cancel order in status: " + currentStatus);
+            }
+
+            // Read items (needed for inventory release)
+            var items = proxyMode
+                ? jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ? AND user_id = ?",
                     (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo),
-                    orderId, userId);
+                    orderId, userId)
+                : jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ?",
+                    (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo),
+                    orderId);
+
+            if (proxyMode) {
+                completeCancelOrderVia2pc(orderId, orderNo, userId, currentStatus, reason,
+                        idempotencyKey, operatorId, traceId, items);
+                return;
+            }
+
+            // ---- Single-DB path ----
+            if (currentStatus == OrderStatus.PENDING_PAYMENT.getCode()) {
                 inventoryService.releaseBatch(items);
                 int affected = jdbc.update("UPDATE orders SET status=?, cancelled_at=NOW(), version=version+1 WHERE id=? AND user_id=? AND status=?",
                     OrderStatus.CANCELLED.getCode(), orderId, userId, OrderStatus.PENDING_PAYMENT.getCode());
                 if (affected == 0) throw new BusinessException("ORDER_STATUS_CHANGED", "Order status already changed");
                 writeStatusLog(orderId, orderNo, OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED, "USER", reason);
                 writeOutbox("ORDER_CANCELLED", "ORDER", orderId, buildPayload(orderNo, reason));
-            } else if (currentStatus == OrderStatus.PAID.getCode()) {
-                var items = jdbc.query("SELECT product_id, quantity FROM order_items WHERE order_id = ? AND user_id = ?",
-                    (rs, rn) -> new InventoryService.StockLockItem(rs.getLong("product_id"), rs.getInt("quantity"), orderNo),
-                    orderId, userId);
+            } else {
                 inventoryService.releaseBatch(items);
                 int affected = jdbc.update("UPDATE orders SET status=?, version=version+1 WHERE id=? AND user_id=? AND status=?",
                     OrderStatus.REFUNDING.getCode(), orderId, userId, OrderStatus.PAID.getCode());
                 if (affected == 0) throw new BusinessException("ORDER_STATUS_CHANGED", "Order status already changed");
                 writeStatusLog(orderId, orderNo, OrderStatus.PAID, OrderStatus.REFUNDING, "USER", reason);
                 writeOutbox("ORDER_CANCEL_REFUND", "ORDER", orderId, buildPayload(orderNo, reason));
-            } else if (currentStatus == OrderStatus.SHIPPED.getCode()) {
-                throw new BusinessException("ORDER_STATUS_CHANGED", "Cannot cancel shipped order");
-            } else {
-                throw new BusinessException("ORDER_STATUS_CHANGED", "Cannot cancel order in status: " + currentStatus);
             }
             idempotencyService.markCompleted(idempotencyKey, "USER", operatorId, "{}");
-            log.info("Order cancelled: orderNo={}, reason={}", orderNo, reason);
+            log.info("Order cancelled (single-DB): orderNo={}, reason={}", orderNo, reason);
         } catch (RuntimeException e) {
             idempotencyService.markFailed(idempotencyKey, "USER", operatorId);
             throw e;
         }
+    }
+
+    private void completeCancelOrderVia2pc(long orderId, String orderNo, long userId,
+                                           int currentStatus, String reason,
+                                           String idempotencyKey, Long operatorId,
+                                           String traceId,
+                                           List<InventoryService.StockLockItem> items) {
+        int shardIdx = twoPhaseCoordinator.shardIndex(userId);
+        int newStatus = (currentStatus == OrderStatus.PENDING_PAYMENT.getCode())
+                ? OrderStatus.CANCELLED.getCode()
+                : OrderStatus.REFUNDING.getCode();
+        String eventType = (currentStatus == OrderStatus.PENDING_PAYMENT.getCode())
+                ? "ORDER_CANCELLED" : "ORDER_CANCEL_REFUND";
+
+        // PRIMARY participant: release inventory + journals + status log + outbox
+        List<TwoPhaseCoordinator.SqlStatement> primaryStmts = new ArrayList<>();
+        for (var item : items) {
+            primaryStmts.add(new TwoPhaseCoordinator.SqlStatement(
+                "UPDATE product_inventory SET available_qty = available_qty + ?, " +
+                "locked_qty = locked_qty - ?, version = version + 1 " +
+                "WHERE product_id = ? AND locked_qty >= ?",
+                item.quantity(), item.quantity(), item.productId(), item.quantity()));
+            primaryStmts.add(new TwoPhaseCoordinator.SqlStatement(
+                "INSERT INTO inventory_journals (product_id, biz_type, biz_no, " +
+                "change_available, change_locked, change_shipped) " +
+                "VALUES (?, 'ORDER_CANCEL', ?, ?, ?, 0)",
+                item.productId(), orderNo, item.quantity(), -item.quantity()));
+        }
+        primaryStmts.add(new TwoPhaseCoordinator.SqlStatement(
+            "INSERT INTO order_status_logs (order_id, order_no, from_status, to_status, operator, reason) " +
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            orderId, orderNo, currentStatus, newStatus, "USER", reason));
+        primaryStmts.add(new TwoPhaseCoordinator.SqlStatement(
+            "INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload, status) " +
+            "VALUES (?, 'ORDER', ?, ?, 10)",
+            eventType, orderId, buildPayload(orderNo, reason)));
+
+        // Shard participant: update order status (conditional on CURRENT status)
+        List<TwoPhaseCoordinator.SqlStatement> shardStmts = new ArrayList<>();
+        shardStmts.add(new TwoPhaseCoordinator.SqlStatement(
+            "UPDATE orders SET status = ?, cancelled_at = NOW(), version = version + 1 " +
+            "WHERE id = ? AND user_id = ? AND status = ?",
+            newStatus, orderId, userId, currentStatus));
+
+        TwoPhaseCoordinator.TwoPhasePlan plan = new TwoPhaseCoordinator.TwoPhasePlan(
+                traceId, shardIdx, primaryStmts, shardStmts,
+                "cancelOrder " + orderNo + " user=" + userId + " status=" + currentStatus);
+        TwoPhaseCoordinator.TwoPhaseResult result = twoPhaseCoordinator.execute(plan);
+
+        if (!result.success()) {
+            idempotencyService.markFailed(idempotencyKey, "USER", operatorId);
+            String detail = result.votes().stream()
+                    .map(v -> v.dataSourceName() + "=" + v.vote())
+                    .reduce((a, b) -> a + ", " + b).orElse("none");
+            throw new BusinessException("2PC_ABORTED",
+                    "2PC cancelOrder failed: " + detail + ". Check order status and retry.");
+        }
+
+        // Verify the shard update actually took effect
+        Integer postStatus = jdbc.query(
+            "SELECT status FROM orders WHERE id = ? AND user_id = ?",
+            rs -> rs.next() ? rs.getInt("status") : null,
+            orderId, userId);
+        if (postStatus == null || postStatus == currentStatus) {
+            // Status didn't change — someone else modified it between our read and 2PC
+            // The inventory release already happened (PRIMARY committed). Write exception.
+            log.warn("Cancel 2PC committed but order status unchanged: orderNo={}, expected={}, actual={}",
+                    orderNo, newStatus, postStatus);
+            writeException("ORDER", orderNo, "ORDER_STATUS_RACE",
+                    "Cancel committed but status unchanged (race condition). Expected status "
+                    + newStatus + ", actual " + postStatus + ". Inventory may need manual adjustment.");
+            idempotencyService.markFailed(idempotencyKey, "USER", operatorId);
+            throw new BusinessException("ORDER_STATUS_CHANGED",
+                    "Order status was modified concurrently. Please refresh and retry.");
+        }
+
+        idempotencyService.markCompleted(idempotencyKey, "USER", operatorId, "{}");
+        log.info("Order cancelled via 2PC: orderNo={}, newStatus={}, traceId={}, elapsed={}ms",
+                orderNo, newStatus, traceId, result.elapsedMs());
+    }
+
+    private void writeException(String bizType, String bizNo, String reasonCode, String detail) {
+        try {
+            jdbc.update("INSERT INTO exception_tickets (biz_type, biz_no, reason_code, detail, status) " +
+                    "VALUES (?, ?, ?, ?, 10)", bizType, bizNo, reasonCode,
+                    toJson(Map.of("detail", detail)));
+        } catch (Exception e) {
+            log.error("Failed to write exception ticket for {} {}: {}", bizType, bizNo, e.getMessage());
+        }
+    }
+
+    private String toJson(Object value) {
+        try { return objectMapper.writeValueAsString(value); }
+        catch (Exception e) { return "{}"; }
     }
 
     private String generateOrderNo() {

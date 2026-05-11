@@ -362,15 +362,32 @@ function Orders({ lang, openTrace }: { lang: Lang; openTrace: (orderId: number) 
           }
         }}>{tr(lang, 'details')}</Button>
         <Button onClick={() => openTrace(r.orderId)}>{lang === 'zh' ? '数据库链路' : 'Trace'}</Button>
-        {(r.status === 10 || r.status === 20) && <Button danger onClick={() => {
-          setCancelTarget(r);
-          setCancelReason(r.status === 20
-            ? (lang === 'zh' ? '已支付订单取消，进入退款或异常处理' : 'Paid order cancellation moves to refund handling')
-            : (lang === 'zh' ? '待支付订单取消，释放锁定库存' : 'Pending order cancellation releases locked stock'));
-        }}>{tr(lang, 'cancel')}</Button>}
+        {(r.status === 10 || r.status === 20) && <Button danger onClick={() => openCancelModal(r)}>{tr(lang, 'cancel')}</Button>}
       </Space>
     ) },
   ];
+
+  const [cancelDetail, setCancelDetail] = useState<OrderDetail>();
+  const [cancelConflict, setCancelConflict] = useState(false);
+
+  // Load full order detail when opening cancel modal
+  const openCancelModal = async (target: OrderSummary | OrderDetail) => {
+    setCancelConflict(false);
+    if ('items' in target) {
+      setCancelDetail(target as OrderDetail);
+    } else {
+      try {
+        const detail = await api.order(target.orderId, userId);
+        setCancelDetail(detail);
+      } catch {
+        setCancelDetail(undefined);
+      }
+    }
+    setCancelTarget(target);
+    setCancelReason(target.status === 20
+      ? (lang === 'zh' ? '已支付订单取消，进入退款或异常处理' : 'Paid order cancellation moves to refund handling')
+      : (lang === 'zh' ? '待支付订单取消，释放锁定库存' : 'Pending order cancellation releases locked stock'));
+  };
 
   const confirmCancel = async () => {
     if (!cancelTarget) return;
@@ -379,16 +396,23 @@ function Orders({ lang, openTrace }: { lang: Lang; openTrace: (orderId: number) 
       return;
     }
     setCancelSubmitting(true);
+    setCancelConflict(false);
     try {
       await api.cancelOrder(cancelTarget.orderId, userId, cancelReason.trim());
-      message.success(lang === 'zh' ? '订单已更新，正在刷新列表' : 'Order updated; refreshing');
+      message.success(lang === 'zh' ? '订单已取消，库存已释放' : 'Order cancelled, inventory released');
       setCancelTarget(undefined);
+      setCancelDetail(undefined);
       await reload();
       if (selected?.orderId === cancelTarget.orderId) {
         setSelected(await api.order(cancelTarget.orderId, userId));
       }
     } catch (e) {
-      message.error(formatApiError(e, lang));
+      const msg = formatApiError(e, lang);
+      if (msg.includes('ORDER_STATUS_CHANGED') || msg.includes('2PC_ABORTED')) {
+        setCancelConflict(true);
+      } else {
+        message.error(msg);
+      }
     } finally {
       setCancelSubmitting(false);
     }
@@ -422,31 +446,71 @@ function Orders({ lang, openTrace }: { lang: Lang; openTrace: (orderId: number) 
         title={lang === 'zh' ? '确认取消订单' : 'Confirm Cancellation'}
         open={!!cancelTarget}
         confirmLoading={cancelSubmitting}
-        okText={tr(lang, 'cancel')}
-        okButtonProps={{ danger: true }}
-        onOk={confirmCancel}
-        onCancel={() => setCancelTarget(undefined)}
+        okText={cancelConflict ? (lang === 'zh' ? '刷新后重试' : 'Refresh & Retry') : tr(lang, 'cancel')}
+        okButtonProps={{ danger: !cancelConflict }}
+        onOk={cancelConflict ? (() => { void reload(); setCancelTarget(undefined); setCancelDetail(undefined); setCancelConflict(false); }) : confirmCancel}
+        onCancel={() => { setCancelTarget(undefined); setCancelDetail(undefined); setCancelConflict(false); }}
+        width={560}
       >
-        <Space direction="vertical" className="full">
-          <Alert
-            type="warning"
-            showIcon
-            message={lang === 'zh' ? '取消影响确认' : 'Cancellation impact'}
-            description={cancelTarget?.status === 20
-              ? (lang === 'zh' ? '已支付订单不会直接发货，系统会进入退款中或异常处理路径。' : 'Paid orders will not be shipped and move to refund or exception handling.')
-              : (lang === 'zh' ? '待支付订单会释放锁定库存并写入状态日志与 outbox。' : 'Pending orders release locked stock and write status log/outbox.')}
-          />
+        <Space direction="vertical" className="full" size={12}>
+          {cancelConflict ? (
+            <Alert
+              type="error"
+              showIcon
+              message={lang === 'zh' ? '订单状态已变更' : 'Order status changed'}
+              description={lang === 'zh'
+                ? '该订单已被其他操作修改（可能已支付或已取消）。请刷新页面查看最新状态后重新操作。'
+                : 'This order was modified by another operation (may have been paid or cancelled). Please refresh to see the latest status.'}
+            />
+          ) : (
+            <Alert
+              type="warning"
+              showIcon
+              message={lang === 'zh' ? '取消影响确认' : 'Cancellation impact'}
+              description={cancelTarget?.status === 20
+                ? (lang === 'zh' ? '已支付订单不会直接发货，系统会进入退款中或异常处理路径。' : 'Paid orders won\'t be shipped and move to refund or exception handling.')
+                : (lang === 'zh' ? '待支付订单会释放锁定库存并写入状态日志与 outbox。' : 'Pending orders release locked stock and write status log/outbox.')}
+            />
+          )}
           <Descriptions column={1} size="small">
             <Descriptions.Item label="Order No">{cancelTarget?.orderNo}</Descriptions.Item>
-            <Descriptions.Item label={lang === 'zh' ? '当前状态' : 'Current Status'}>{cancelTarget ? orderStatusText(cancelTarget.status, lang) : '-'}</Descriptions.Item>
+            <Descriptions.Item label={lang === 'zh' ? '当前状态' : 'Current Status'}>
+              <Tag color={cancelTarget?.status === 20 ? 'blue' : 'orange'}>
+                {cancelTarget ? orderStatusText(cancelTarget.status, lang) : '-'}
+              </Tag>
+            </Descriptions.Item>
+            {cancelTarget && <Descriptions.Item label={lang === 'zh' ? '金额' : 'Amount'}>¥{cancelTarget.totalAmount}</Descriptions.Item>}
           </Descriptions>
-          <Input.TextArea
-            rows={4}
-            maxLength={256}
-            showCount
-            value={cancelReason}
-            onChange={(e) => setCancelReason(e.target.value)}
-          />
+
+          {/* Stock items to be released */}
+          {cancelDetail?.items && cancelDetail.items.length > 0 && !cancelConflict && (
+            <ProCard size="small" title={lang === 'zh' ? '释放库存明细' : 'Inventory to Release'}>
+              <Space direction="vertical" className="full" size={4}>
+                {cancelDetail.items.map((item) => (
+                  <div key={item.productId} className="queue-item">
+                    <span>{item.productName || item.productSku}</span>
+                    <Tag color="green">+{item.quantity}</Tag>
+                  </div>
+                ))}
+              </Space>
+              <Typography.Text type="secondary" className="top-gap">
+                {lang === 'zh'
+                  ? `共 ${cancelDetail.items.reduce((s, i) => s + i.quantity, 0)} 件商品库存将被释放`
+                  : `${cancelDetail.items.reduce((s, i) => s + i.quantity, 0)} items will be released back to inventory`}
+              </Typography.Text>
+            </ProCard>
+          )}
+
+          {!cancelConflict && (
+            <Input.TextArea
+              rows={3}
+              maxLength={256}
+              showCount
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              placeholder={lang === 'zh' ? '取消原因（必填）' : 'Cancellation reason (required)'}
+            />
+          )}
         </Space>
       </Modal>
     </PageContainer>
@@ -484,6 +548,7 @@ function Fulfillment({ lang }: { lang: Lang }) {
   const [carrier, setCarrier] = useState('mock_express');
   const [trackingNo, setTrackingNo] = useState('');
   const [error, setError] = useState<string>();
+  const [shipError, setShipError] = useState<string>();
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -525,10 +590,15 @@ function Fulfillment({ lang }: { lang: Lang }) {
       message.warning(lang === 'zh' ? '承运商和运单号必填' : 'Carrier and tracking number are required');
       return;
     }
-    await runTaskAction(`ship-${shipTarget.taskId}`,
-      () => api.ship(shipTarget.taskId, carrier.trim(), trackingNo.trim(), shipTarget.assigneeId ?? 2001),
-      lang === 'zh' ? '发货完成，订单状态已刷新' : 'Shipment completed');
-    setShipTarget(undefined);
+    setShipError(undefined);
+    try {
+      await api.ship(shipTarget.taskId, carrier.trim(), trackingNo.trim(), shipTarget.assigneeId ?? 2001);
+      message.success(lang === 'zh' ? '发货完成' : 'Shipment completed');
+      setShipTarget(undefined);
+      await reload();
+    } catch (e) {
+      setShipError(formatApiError(e, lang));
+    }
   };
 
   return (
@@ -556,18 +626,26 @@ function Fulfillment({ lang }: { lang: Lang }) {
       <Modal
         title={lang === 'zh' ? '确认发货' : 'Confirm Shipment'}
         open={!!shipTarget}
-        confirmLoading={actionKey === `ship-${shipTarget?.taskId}`}
-        okText={tr(lang, 'ship')}
-        onOk={confirmShip}
-        onCancel={() => setShipTarget(undefined)}
+        okText={shipError ? (lang === 'zh' ? '关闭并刷新' : 'Close & Refresh') : tr(lang, 'ship')}
+        onOk={shipError ? (() => { setShipTarget(undefined); setShipError(undefined); void reload(); }) : confirmShip}
+        onCancel={() => { setShipTarget(undefined); setShipError(undefined); }}
       >
         <Space direction="vertical" className="full">
-          <Alert
-            type="warning"
-            showIcon
-            message={lang === 'zh' ? '发货会推进订单状态' : 'Shipment advances order status'}
-            description={lang === 'zh' ? '系统会校验任务归属、任务状态和订单状态，成功后写入 shipment、库存流水、状态日志和 outbox。' : 'The system validates assignment, task status and order status, then writes shipment, inventory journal, status log and outbox.'}
-          />
+          {shipError ? (
+            <Alert
+              type="error"
+              showIcon
+              message={lang === 'zh' ? '发货失败' : 'Shipment failed'}
+              description={shipError}
+            />
+          ) : (
+            <Alert
+              type="warning"
+              showIcon
+              message={lang === 'zh' ? '发货会推进订单状态' : 'Shipment advances order status'}
+              description={lang === 'zh' ? '校验任务归属、任务状态和订单状态，成功后写入 shipment、库存流水、状态日志和 outbox。' : 'Validates assignment, task status and order status; writes shipment, inventory journal, status log and outbox.'}
+            />
+          )}
           <Descriptions column={1} size="small">
             <Descriptions.Item label={lang === 'zh' ? '任务号' : 'Task No'}>{shipTarget?.taskNo}</Descriptions.Item>
             <Descriptions.Item label="Order No">{shipTarget?.orderNo}</Descriptions.Item>
