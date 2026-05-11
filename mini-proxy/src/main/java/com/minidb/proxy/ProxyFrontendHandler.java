@@ -104,8 +104,8 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                 return;
             }
 
-            byte[] expected = AuthNativePassword.computeAuthResponse(scramble, config.proxyPassword());
-            boolean ok = java.util.Arrays.equals(expected, response.authResponse());
+            boolean ok = AuthNativePassword.verifyAny(scramble, config.proxyPassword(),
+                    response.authResponse());
 
             if (!ok) {
                 log.debug("Auth: expected len={}, got len={}, authPlugin={}",
@@ -115,15 +115,10 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             if (ok) {
                 session.setState(ConnectionState.READY);
                 ctx.writeAndFlush(ResponsePackets.ok((byte) 2));
-                log.info("Client {} authenticated", ctx.channel().remoteAddress());
-            } else if (isLocalhost(ctx)) {
-                // Teaching proxy: accept any auth from localhost for JDBC compatibility
-                log.warn("Auth bypassed for local client '{}' (password mismatch, accepting anyway for JDBC compat)",
-                        response.username());
-                session.setState(ConnectionState.READY);
-                ctx.writeAndFlush(ResponsePackets.ok((byte) 2));
+                String method = response.authResponse().length == 32 ? "caching_sha2_password" : "mysql_native_password";
+                log.info("Client {} authenticated ({})", ctx.channel().remoteAddress(), method);
             } else {
-                log.warn("Auth failed for '{}'", response.username());
+                log.warn("Auth failed for '{}' (len={})", response.username(), response.authResponse().length);
                 ctx.writeAndFlush(ResponsePackets.accessDenied((byte) 2, response.username()));
                 ctx.channel().eventLoop().schedule(
                         (Runnable) ctx::close, 100, TimeUnit.MILLISECONDS);
@@ -330,14 +325,6 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             pool.release(autoConn);
             session.clearAutoConnection();
         }
-    }
-
-    private boolean isLocalhost(ChannelHandlerContext ctx) {
-        var addr = ctx.channel().remoteAddress();
-        if (addr instanceof java.net.InetSocketAddress sa) {
-            return sa.getAddress().isLoopbackAddress();
-        }
-        return false;
     }
 
     private static String sqlPreview(String sql) {
