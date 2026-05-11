@@ -156,82 +156,53 @@ sequenceDiagram
 
 ## 快速开始
 
-环境检查：
+### 5 分钟跑通（单库直连模式）
 
 ```bash
-java -version
-mvn -version
-docker --version
-mysql --version
-node --version
-npm --version
+# 1. 启动后端（H2 内存数据库，无需安装 MySQL）
+mvn -pl order-api spring-boot:run -Dspring-boot.run.profiles=test
+
+# 2. 新终端，启动前端
+npm --prefix web-console run dev
+
+# 3. 浏览器打开
+# http://127.0.0.1:5173/business/dashboard
+# 点击"加载演示订单"即可看到 5 条完整业务数据
 ```
 
-运行本地自动验证：
+### Proxy 模式（需要 Docker MySQL）
 
 ```bash
-python tools/verify_local.py
-python tools/verify_local.py verify
+# 1. 启动 MySQL 容器
+docker compose up -d
 
-后端：
+# 2. 启动 mini-proxy（若本机 MySQL 占 3306 则换端口）
+$env:MINIDB_PROXY_PORT=13306   # PowerShell
+mvn -pl mini-proxy exec:java "-Dexec.mainClass=com.minidb.proxy.MiniProxyServer"
 
-order-api：http://127.0.0.1:8080
-订单履约终端：http://127.0.0.1:5173/business/dashboard
+# 3. 新终端，启动 order-api proxy 模式
+$env:MINIDB_PROXY_PORT=13306
+mvn -pl order-api clean spring-boot:run "-Dspring-boot.run.profiles=proxy"
+
+# 4. 浏览器打开 Proxy 观测页
+# http://127.0.0.1:5173/database/proxy
 ```
 
-严格模式用于 CI 或完整环境：
+### 全量验证
 
 ```bash
-python tools/verify_local.py --strict
+python tools/verify_local.py --json
 ```
 
-统一工程维护命令：
-
-```bash
-# 预演清理 Maven target/ 和前端 dist/，不实际删除
-python tools/verify_local.py clean
-
-# 执行清理，仅限白名单构建产物目录
-python tools/verify_local.py clean --apply
-
-# 检查日志大小和同名前缀日志数量，默认限制 20 MB、10 个文件
-python tools/verify_local.py log-check
-
-# 自定义日志约束；超出数量的旧日志加 --apply 后归档到 logs/archive/
-python tools/verify_local.py log-check --max-log-size-mb 20 --max-log-files 10
-python tools/verify_local.py log-check --apply
-```
-
-- 后端构建与测试：
-
+### 构建与测试
 
 ```bash
 mvn -B verify
 mvn -pl mini-mvcc test
 mvn -pl mini-proxy test
 mvn -pl order-api test
-```
-
-- 后端服务启动：
-
-
-```bash
-mvn -f order-api/pom.xml org.springframework.boot:spring-boot-maven-plugin:3.2.5:test-run -Dspring-boot.run.profiles=test
-```
-
-前端启动：
-
-```bash
-cd web-console
-npm install
-npm run dev
-```
-
-数据库迁移：
-
-```bash
-mvn -pl order-api flyway:migrate
-mvn -pl order-api flyway:info
+npm --prefix web-console run lint
+npm --prefix web-console run test
 ```
 
 

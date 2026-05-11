@@ -304,6 +304,7 @@ PROXY_EXPECTED_SOURCES = [
     "AltRouteType.java",
     "ProxyManagementServer.java",
     "RouteDecisionLog.java",
+    "RouteDecisionRepository.java",
     "protocol/MySqlPacket.java",
     "protocol/MySqlPacketEncoder.java",
     "protocol/MySqlPacketDecoder.java",
@@ -380,6 +381,7 @@ ORDER_EXPECTED_SOURCES = [
     "dto/ShipOrderRequest.java",
     "dto/ResolveExceptionRequest.java",
     "dto/ApiResponse.java",
+    "dto/CustomScenarioRequest.java",
     "service/IdempotencyService.java",
     "service/InventoryService.java",
     "service/OrderService.java",
@@ -390,6 +392,10 @@ ORDER_EXPECTED_SOURCES = [
     "service/ProductService.java",
     "service/ExceptionService.java",
     "service/ConsoleService.java",
+    "service/TwoPhaseCoordinator.java",
+    "service/TraceContext.java",
+    "service/TraceService.java",
+    "web/ApiKeyFilter.java",
     "web/OrderController.java",
     "web/PaymentController.java",
     "web/FulfillmentController.java",
@@ -481,6 +487,52 @@ def subprocess_run_in(cwd, command, timeout=120):
         return 127, str(exc)
     except subprocess.TimeoutExpired as exc:
         return 124, f"timeout after {exc.timeout}s"
+
+
+SECRET_PATTERNS = [
+    ("password:", "hardcoded password"),
+    ("secret:", "hardcoded secret"),
+    ("api[_-]?key", "hardcoded API key"),
+]
+
+
+def check_no_hardcoded_secrets():
+    """Verify no secrets are hardcoded in source files (config files excluded)."""
+    violations = []
+    scan_roots = [
+        ROOT / "mini-mvcc" / "src",
+        ROOT / "mini-proxy" / "src",
+        ROOT / "order-api" / "src" / "main" / "java",
+    ]
+    for scan_root in scan_roots:
+        if not scan_root.exists():
+            continue
+        for path in scan_root.rglob("*.java"):
+            try:
+                content = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            for pattern, label in SECRET_PATTERNS:
+                import re
+                if re.search(pattern, content, re.IGNORECASE):
+                    # Allow env var placeholders
+                    if "${" in content or "System.getenv" in content:
+                        continue
+                    violations.append(f"{path.relative_to(ROOT)}: {label}")
+    if violations:
+        return False, f"potential secrets: {'; '.join(violations[:5])}"
+    return True, "no hardcoded secrets detected in source files"
+
+
+def check_openapi_endpoint():
+    """Verify SpringDoc OpenAPI endpoint is configured."""
+    config = ROOT / "order-api" / "src" / "main" / "resources" / "application.yml"
+    if not config.exists():
+        return False, "application.yml missing"
+    text = config.read_text(encoding="utf-8")
+    if "springdoc" not in text:
+        return False, "springdoc not configured"
+    return True, "OpenAPI (springdoc) configured"
 
 
 def run_maven_verify(strict):
@@ -641,6 +693,12 @@ def main():
 
     ok, detail = check_log_policy()
     checks.append({"name": "logs:policy", "ok": ok, "detail": detail})
+
+    ok, detail = check_no_hardcoded_secrets()
+    checks.append({"name": "security:no-hardcoded-secrets", "ok": ok, "detail": detail})
+
+    ok, detail = check_openapi_endpoint()
+    checks.append({"name": "docs:openapi-config", "ok": ok, "detail": detail})
 
     for script in ("lint", "test"):
         ok, detail = run_web_console_command(script)

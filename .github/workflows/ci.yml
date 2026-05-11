@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [v1, main]
+    branches: [v1, v8, main]
   pull_request:
-    branches: [v1, main]
+    branches: [v1, v8, main]
 
 jobs:
   verify:
@@ -31,5 +31,22 @@ jobs:
         run: npm install
         working-directory: web-console
 
+      - name: Lint web-console
+        run: npm run lint
+        working-directory: web-console
+
+      - name: Test web-console
+        run: npm run test
+        working-directory: web-console
+
+      - name: Build web-console
+        run: npm run build
+        working-directory: web-console
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Verify local baseline
-        run: python tools/verify_local.py --strict
+        run: python tools/verify_local.py --strict --json

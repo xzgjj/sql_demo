@@ -36,3 +36,4 @@ web-console/.vite/
 
 # Local-only design previews and visual references
 design-preview/
+tools/__pycache__/
