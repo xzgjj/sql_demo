@@ -22,6 +22,11 @@ public final class AuthNativePassword {
 
     // ---- mysql_native_password (SHA1) ----
 
+    /** @deprecated use {@link #computeNativeAuthResponse} */
+    public static byte[] computeAuthResponse(byte[] scramble, String password) {
+        return computeNativeAuthResponse(scramble, password);
+    }
+
     public static byte[] computeNativeAuthResponse(byte[] scramble, String password) {
         MessageDigest sha1 = sha1();
         byte[] passwordHash = sha1.digest(password.getBytes(StandardCharsets.UTF_8));

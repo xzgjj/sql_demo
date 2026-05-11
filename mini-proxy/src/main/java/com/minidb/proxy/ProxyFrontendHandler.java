@@ -108,8 +108,8 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                     response.authResponse());
 
             if (!ok) {
-                log.debug("Auth: expected len={}, got len={}, authPlugin={}",
-                        expected.length, response.authResponse().length, response.authPluginName());
+                log.debug("Auth: got len={}, authPlugin={}",
+                        response.authResponse().length, response.authPluginName());
             }
 
             if (ok) {
