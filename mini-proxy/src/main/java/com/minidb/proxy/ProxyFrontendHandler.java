@@ -31,16 +31,25 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
     private final SqlRouterImpl router;
     private final BackendConnectionPool pool;
     private final RouteDecisionLog decisionLog;
+    private final RouteDecisionRepository decisionRepo;
     private ProxyManagementServer managementServer;
 
     public ProxyFrontendHandler(ProxyConfig config, SqlParserImpl sqlParser,
                                 SqlRouterImpl router, BackendConnectionPool pool,
-                                RouteDecisionLog decisionLog) {
+                                RouteDecisionLog decisionLog,
+                                RouteDecisionRepository decisionRepo) {
         this.config = config;
         this.sqlParser = sqlParser;
         this.router = router;
         this.pool = pool;
         this.decisionLog = decisionLog;
+        this.decisionRepo = decisionRepo;
+    }
+
+    private static String generateTraceId() {
+        long ms = System.currentTimeMillis();
+        long rand = ThreadLocalRandom.current().nextLong();
+        return String.format("%012x-%016x", ms, rand & 0xFFFFFFFFFFFFL);
     }
 
     public void setManagementServer(ProxyManagementServer mgmt) {
@@ -156,8 +165,15 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
             plan = router.route(session, parsed);
         } catch (SqlRouterImpl.CrossShardException e) {
             log.warn("Routing error: {}", e.getMessage());
+            String errTraceId = generateTraceId();
             decisionLog.record(session.sessionId(), sqlPreview(sql), "NONE", "-",
                     "REJECTED", e.getMessage(), "ERR", System.currentTimeMillis() - routeStart);
+            if (decisionRepo != null) {
+                decisionRepo.record(new RouteDecisionRepository.DecisionEntry(
+                        errTraceId, session.sessionId(), sqlPreview(sql),
+                        "NONE", "-", "REJECTED", "REJECTED", e.getMessage(),
+                        "ERR", (int)(System.currentTimeMillis() - routeStart)));
+            }
             ctx.writeAndFlush(ResponsePackets.err((byte) 1, e.errorCode(), e.getMessage()));
             return;
         }
@@ -168,6 +184,7 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
         }
 
         // Record route decision
+        String traceId = generateTraceId();
         String target = plan.dataSourceId() != null ? plan.dataSourceId().name() : "session";
         String keyType = parsed.hasAltRouteKey() ? parsed.altRouteType().name()
                 : parsed.shardKey() != null ? "USER_ID"
@@ -176,6 +193,14 @@ public class ProxyFrontendHandler extends ChannelInboundHandlerAdapter {
                 : parsed.hasAltRouteKey() ? parsed.altRouteKey() : "-";
         decisionLog.record(session.sessionId(), sqlPreview(sql), keyType, keyValue,
                 target, "routed", "OK", System.currentTimeMillis() - routeStart);
+
+        // Persist route decision (best-effort, non-blocking)
+        if (decisionRepo != null) {
+            decisionRepo.record(new RouteDecisionRepository.DecisionEntry(
+                    traceId, session.sessionId(), sqlPreview(sql),
+                    keyType, keyValue, target, "routed", "OK",
+                    "OK", (int)(System.currentTimeMillis() - routeStart)));
+        }
 
         // Release any previous non-transactional connection before borrowing a new one
         if (!session.inTransaction()) {

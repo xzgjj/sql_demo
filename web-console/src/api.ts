@@ -75,6 +75,19 @@ export type OrderTrace = {
   outbox: Array<Record<string, unknown>>;
   timeline: Array<Record<string, unknown>>;
   sqlHistory: string[];
+  sqlAuditLogs: Array<SqlAuditEntry>;
+};
+
+export type SqlAuditEntry = {
+  traceId: string;
+  sqlDigest: string;
+  sqlSummary: string;
+  targetDs: string;
+  targetShard: number | null;
+  status: string;
+  errorCode: string | null;
+  elapsedMs: number;
+  createdAt: string;
 };
 
 export type LabRunResult = {

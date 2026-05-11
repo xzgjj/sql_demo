@@ -12,16 +12,19 @@ public class ProxyChannelInitializer extends ChannelInitializer<SocketChannel> {
     private final SqlRouterImpl router;
     private final BackendConnectionPool pool;
     private final RouteDecisionLog decisionLog;
+    private final RouteDecisionRepository decisionRepo;
     private volatile ProxyManagementServer managementServer;
 
     public ProxyChannelInitializer(ProxyConfig config, SqlParserImpl sqlParser,
                                     SqlRouterImpl router, BackendConnectionPool pool,
-                                    RouteDecisionLog decisionLog) {
+                                    RouteDecisionLog decisionLog,
+                                    RouteDecisionRepository decisionRepo) {
         this.config = config;
         this.sqlParser = sqlParser;
         this.router = router;
         this.pool = pool;
         this.decisionLog = decisionLog;
+        this.decisionRepo = decisionRepo;
     }
 
     public void setManagementServer(ProxyManagementServer mgmt) {
@@ -30,7 +33,8 @@ public class ProxyChannelInitializer extends ChannelInitializer<SocketChannel> {
 
     @Override
     protected void initChannel(SocketChannel ch) {
-        ProxyFrontendHandler handler = new ProxyFrontendHandler(config, sqlParser, router, pool, decisionLog);
+        ProxyFrontendHandler handler = new ProxyFrontendHandler(
+                config, sqlParser, router, pool, decisionLog, decisionRepo);
         if (managementServer != null) {
             handler.setManagementServer(managementServer);
         }

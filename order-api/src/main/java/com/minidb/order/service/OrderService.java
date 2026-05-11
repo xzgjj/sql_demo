@@ -33,24 +33,31 @@ public class OrderService {
     private final ObjectMapper objectMapper;
     private final int paymentTimeoutMinutes;
     private final boolean proxyMode;
+    private final TwoPhaseCoordinator twoPhaseCoordinator;
+    private final TraceService traceService;
 
     public OrderService(JdbcTemplate jdbc, InventoryService inventoryService,
                         IdempotencyService idempotencyService, ObjectMapper objectMapper,
                         @Value("${minidb.order.payment-timeout-minutes:30}") int paymentTimeoutMinutes,
-                        @Value("${minidb.order.proxy-mode:false}") boolean proxyMode) {
+                        @Value("${minidb.order.proxy-mode:false}") boolean proxyMode,
+                        TwoPhaseCoordinator twoPhaseCoordinator,
+                        TraceService traceService) {
         this.jdbc = jdbc;
         this.inventoryService = inventoryService;
         this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
         this.paymentTimeoutMinutes = paymentTimeoutMinutes;
         this.proxyMode = proxyMode;
+        this.twoPhaseCoordinator = twoPhaseCoordinator;
+        this.traceService = traceService;
     }
 
     @Transactional
     public CreateOrderResponse createOrder(CreateOrderRequest req, String idempotencyKey) {
-        rejectProxyWrite("create orders");
-        log.info("Creating order for user={}, items={}", req.userId(), req.items().size());
+        log.info("Creating order for user={}, items={}, mode={}",
+                req.userId(), req.items().size(), proxyMode ? "proxy/2PC" : "single-DB");
 
+        String traceId = TraceContext.generate();
         String reqJson;
         try { reqJson = objectMapper.writeValueAsString(req); }
         catch (Exception e) { throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize request"); }
@@ -62,6 +69,7 @@ public class OrderService {
         }
 
         try {
+            long productStart = System.currentTimeMillis();
             List<Long> productIds = req.items().stream().map(i -> i.productId()).toList();
             var products = jdbc.query(
                 "SELECT id, sku, name, price, status FROM products WHERE id IN (" +
@@ -70,14 +78,14 @@ public class OrderService {
                     rs.getString("name"), rs.getBigDecimal("price"), rs.getInt("status")),
                 productIds.toArray()
             );
+            traceService.recordSql(traceId, "SELECT products", null, req.userId(),
+                    "NONE", "PRIMARY", null, "OK", null,
+                    (int)(System.currentTimeMillis() - productStart));
+
             if (products.size() != productIds.size()) throw new BusinessException("PRODUCT_NOT_FOUND", "Some products not found");
             for (var p : products) if (p.status != 1) throw new BusinessException("PRODUCT_OFFLINE", "Product offline: " + p.sku);
 
             String orderNo = generateOrderNo();
-            List<InventoryService.StockLockItem> lockItems = new ArrayList<>();
-            for (var item : req.items()) lockItems.add(new InventoryService.StockLockItem(item.productId(), item.quantity(), orderNo));
-            inventoryService.lockBatch(lockItems);
-
             BigDecimal totalAmount = BigDecimal.ZERO;
             for (int i = 0; i < req.items().size(); i++) {
                 final int idx = i;
@@ -86,6 +94,16 @@ public class OrderService {
             }
             final BigDecimal finalAmount = totalAmount;
             LocalDateTime now = LocalDateTime.now();
+
+            if (proxyMode) {
+                return completeCreateOrderVia2pc(req, idempotencyKey, traceId, orderNo,
+                        products, finalAmount, now);
+            }
+
+            // ---- Single-DB path (original logic) ----
+            List<InventoryService.StockLockItem> lockItems = new ArrayList<>();
+            for (var item : req.items()) lockItems.add(new InventoryService.StockLockItem(item.productId(), item.quantity(), orderNo));
+            inventoryService.lockBatch(lockItems);
 
             KeyHolder keyHolder = new GeneratedKeyHolder();
             jdbc.update(conn -> {
@@ -115,17 +133,123 @@ public class OrderService {
             writeOutbox("ORDER_CREATED", "ORDER", orderId, buildPayload(orderNo, null));
             writeOrderRoute(orderNo, req.userId());
 
-            CreateOrderResponse response = new CreateOrderResponse(orderId, orderNo, OrderStatus.PENDING_PAYMENT.getCode(), finalAmount, now.plusMinutes(paymentTimeoutMinutes));
+            CreateOrderResponse response = new CreateOrderResponse(orderId, orderNo,
+                    OrderStatus.PENDING_PAYMENT.getCode(), finalAmount,
+                    now.plusMinutes(paymentTimeoutMinutes));
             String respJson;
             try { respJson = objectMapper.writeValueAsString(response); }
             catch (Exception e) { throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize response"); }
             idempotencyService.markCompleted(idempotencyKey, "USER", req.userId(), respJson);
-            log.info("Order created: orderNo={}, amount={}", orderNo, finalAmount);
+            log.info("Order created (single-DB): orderNo={}, amount={}", orderNo, finalAmount);
             return response;
         } catch (RuntimeException e) {
             idempotencyService.markFailed(idempotencyKey, "USER", req.userId());
             throw e;
         }
+    }
+
+    /**
+     * Proxy-mode order creation via 2PC.
+     * Idempotency and product reads use proxy JdbcTemplate (single-datasource queries).
+     * Data writes across PRIMARY + shard_N use the TwoPhaseCoordinator via direct JDBC.
+     */
+    private CreateOrderResponse completeCreateOrderVia2pc(
+            CreateOrderRequest req, String idempotencyKey, String traceId,
+            String orderNo, List<ProductSnapshot> products,
+            BigDecimal finalAmount, LocalDateTime now) {
+
+        long userId = req.userId();
+        int shardIdx = twoPhaseCoordinator.shardIndex(userId);
+        String expiresAt = now.plusMinutes(paymentTimeoutMinutes).toString();
+        int pendingCode = OrderStatus.PENDING_PAYMENT.getCode();
+
+        // Build PRIMARY participant statements
+        List<TwoPhaseCoordinator.SqlStatement> primaryStmts = new ArrayList<>();
+        // Lock inventory for each item
+        for (var item : req.items()) {
+            primaryStmts.add(new TwoPhaseCoordinator.SqlStatement(
+                "UPDATE product_inventory SET available_qty = available_qty - ?, " +
+                "locked_qty = locked_qty + ?, version = version + 1 " +
+                "WHERE product_id = ? AND available_qty >= ?",
+                item.quantity(), item.quantity(), item.productId(), item.quantity()));
+            primaryStmts.add(new TwoPhaseCoordinator.SqlStatement(
+                "INSERT INTO inventory_journals (product_id, biz_type, biz_no, " +
+                "change_available, change_locked, change_shipped) VALUES (?, 'ORDER_CREATE', ?, ?, ?, 0)",
+                item.productId(), orderNo, -item.quantity(), item.quantity()));
+        }
+        // Outbox
+        primaryStmts.add(new TwoPhaseCoordinator.SqlStatement(
+            "INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload, status) " +
+            "VALUES ('ORDER_CREATED', 'ORDER', 0, ?, 10)",
+            buildPayload(orderNo, null)));
+        // Route table
+        primaryStmts.add(new TwoPhaseCoordinator.SqlStatement(
+            "INSERT INTO order_route (order_no, user_id, biz_type) VALUES (?, ?, 'ORDER') " +
+            "ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), updated_at = NOW()",
+            orderNo, userId));
+
+        // Build shard participant statements
+        List<TwoPhaseCoordinator.SqlStatement> shardStmts = new ArrayList<>();
+        // Order header
+        shardStmts.add(new TwoPhaseCoordinator.SqlStatement(
+            "INSERT INTO orders (order_no, user_id, status, total_amount, remark, expires_at, version) " +
+            "VALUES (?, ?, ?, ?, ?, ?, 0)",
+            orderNo, userId, pendingCode, finalAmount, req.remark(), expiresAt));
+        // Order items
+        for (var item : req.items()) {
+            var prod = products.stream().filter(p -> p.id == item.productId()).findFirst().orElseThrow();
+            shardStmts.add(new TwoPhaseCoordinator.SqlStatement(
+                "INSERT INTO order_items (user_id, order_id, product_id, product_sku, " +
+                "product_name, unit_price, quantity, line_amount) " +
+                "VALUES (?, (SELECT id FROM orders WHERE order_no = ?), ?, ?, ?, ?, ?, ?)",
+                userId, orderNo, prod.id, prod.sku, prod.name, prod.price,
+                item.quantity(), prod.price.multiply(BigDecimal.valueOf(item.quantity()))));
+        }
+
+        // Execute 2PC
+        TwoPhaseCoordinator.TwoPhasePlan plan = new TwoPhaseCoordinator.TwoPhasePlan(
+                traceId, shardIdx, primaryStmts, shardStmts,
+                "createOrder " + orderNo + " user=" + userId);
+        TwoPhaseCoordinator.TwoPhaseResult result = twoPhaseCoordinator.execute(plan);
+
+        if (!result.success()) {
+            String detail = result.votes().stream()
+                    .map(v -> v.dataSourceName() + "=" + v.vote())
+                    .reduce((a, b) -> a + ", " + b).orElse("none");
+            idempotencyService.markFailed(idempotencyKey, "USER", userId);
+            throw new BusinessException("2PC_ABORTED",
+                    "2PC createOrder failed: " + detail + ". Retry with same Idempotency-Key.");
+        }
+
+        // After 2PC success: query the generated order_id
+        Long orderId = jdbc.query(
+            "SELECT id FROM orders WHERE order_no = ? AND user_id = ?",
+            rs -> rs.next() ? rs.getLong("id") : null,
+            orderNo, userId);
+        if (orderId == null) {
+            idempotencyService.markFailed(idempotencyKey, "USER", userId);
+            throw new BusinessException("ORDER_ID_GENERATION_FAILED",
+                    "Order created but ID lookup failed — check 2PC trace: " + traceId);
+        }
+
+        // Write status log and finalize route (these are on PRIMARY via proxy)
+        writeStatusLog(orderId, orderNo, null, OrderStatus.PENDING_PAYMENT, "SYSTEM",
+                "Order created via 2PC");
+        // Update outbox with correct aggregate_id
+        jdbc.update("UPDATE outbox_events SET aggregate_id = ? WHERE aggregate_type = 'ORDER' AND aggregate_id = 0 AND payload LIKE ?",
+                orderId, "%" + orderNo + "%");
+        writeOrderRoute(orderNo, userId);
+
+        CreateOrderResponse response = new CreateOrderResponse(orderId, orderNo,
+                pendingCode, finalAmount, now.plusMinutes(paymentTimeoutMinutes));
+        String respJson;
+        try { respJson = objectMapper.writeValueAsString(response); }
+        catch (Exception e) { throw new BusinessException("SERIALIZATION_ERROR", "Failed to serialize response"); }
+        idempotencyService.markCompleted(idempotencyKey, "USER", userId, respJson);
+
+        log.info("Order created via 2PC: orderId={}, orderNo={}, traceId={}, elapsed={}ms",
+                orderId, orderNo, traceId, result.elapsedMs());
+        return response;
     }
 
     @Transactional

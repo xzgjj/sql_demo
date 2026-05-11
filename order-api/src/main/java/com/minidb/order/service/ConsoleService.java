@@ -200,13 +200,34 @@ public class ConsoleService {
                         rs.getString("operator"), rs.getString("reason"),
                         rs.getTimestamp("created_at").toLocalDateTime()),
                 orderId);
+
+        // Query sql_audit_logs for this order
+        List<SqlAuditEntry> auditLogs;
+        try {
+            auditLogs = jdbc.query(
+                "SELECT trace_id, sql_digest, sql_summary, target_ds, target_shard, status, " +
+                "error_code, elapsed_ms, created_at FROM sql_audit_logs " +
+                "WHERE order_id = ? OR sql_summary LIKE ? ORDER BY created_at DESC LIMIT 20",
+                (rs, rn) -> new SqlAuditEntry(
+                    rs.getString("trace_id"), rs.getString("sql_digest"),
+                    rs.getString("sql_summary"), rs.getString("target_ds"),
+                    (Integer) rs.getObject("target_shard"),
+                    rs.getString("status"), rs.getString("error_code"),
+                    rs.getInt("elapsed_ms"),
+                    rs.getTimestamp("created_at").toLocalDateTime()),
+                orderId, "%" + order.orderNo() + "%");
+        } catch (Exception e) {
+            auditLogs = List.of(); // V004 table may not exist yet
+        }
+
         var sql = List.of(
                 "SELECT * FROM orders WHERE id = ?",
                 "SELECT * FROM order_route WHERE order_no = ?",
                 "SELECT * FROM outbox_events WHERE aggregate_id = ?"
         );
         return new OrderTrace(order, "user_id " + order.userId() + " -> " + order.userId() + " % " + shardCount + " -> shard_" + shard,
-                "auto-commit statements; no cross-shard transaction", route, idempotency, outbox, timeline, sql);
+                proxyMode ? "2PC coordinated across PRIMARY + shard_" + shard : "single-DB transaction",
+                route, idempotency, outbox, timeline, sql, auditLogs);
     }
 
     public RoutePreview previewRoute(String sql) {
@@ -512,7 +533,13 @@ public class ConsoleService {
     public record OrderTrace(TraceOrder order, String route, String transactionContext,
                              List<RouteEntry> routeTable, List<IdempotencyTrace> idempotency,
                              List<OutboxTrace> outbox, List<TimelineTrace> timeline,
-                             List<String> sqlHistory) {}
+                             List<String> sqlHistory,
+                             List<SqlAuditEntry> sqlAuditLogs) {}
+
+    public record SqlAuditEntry(String traceId, String sqlDigest, String sqlSummary,
+                                 String targetDs, Integer targetShard, String status,
+                                 String errorCode, int elapsedMs,
+                                 LocalDateTime createdAt) {}
     public record RoutePreview(String sql, String keyType, String target, String reason, boolean executed) {}
     public record MvccStepTrace(long sequence, long txnId, String operation, String key,
                                 String value, String detail, String explanation) {}

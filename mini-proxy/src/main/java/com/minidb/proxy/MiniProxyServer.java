@@ -52,6 +52,20 @@ public class MiniProxyServer {
         // Observability: route decision ring buffer (last 2000 entries)
         RouteDecisionLog decisionLog = new RouteDecisionLog(2000);
 
+        // Persist route decisions to MySQL (best-effort, non-blocking)
+        try {
+            decisionRepo = new RouteDecisionRepository(
+                    config.backendHost(), config.primaryPort(),
+                    config.backendUsername(), config.backendPassword(),
+                    config.primaryDatabase(), config.backendConnectTimeoutMs());
+            decisionRepo.start();
+            log.info("Route decision persistence to PRIMARY enabled");
+        } catch (Exception e) {
+            log.warn("Route decision persistence unavailable (PRIMARY MySQL not accessible): {}",
+                    e.getMessage());
+            decisionRepo = null;
+        }
+
         // Shared components
         SqlParserImpl sqlParser = new SqlParserImpl();
         SqlRouterImpl router = new SqlRouterImpl(config.shardCount(),
@@ -83,7 +97,8 @@ public class MiniProxyServer {
         managementServer = new ProxyManagementServer(config.listenPort() + 1, config, pool, decisionLog);
         managementServer.start();
 
-        ProxyChannelInitializer channelInit = new ProxyChannelInitializer(config, sqlParser, router, pool, decisionLog);
+        ProxyChannelInitializer channelInit = new ProxyChannelInitializer(
+                config, sqlParser, router, pool, decisionLog, decisionRepo);
         channelInit.setManagementServer(managementServer);
 
         ServerBootstrap b = new ServerBootstrap();
@@ -100,8 +115,13 @@ public class MiniProxyServer {
                 epoll ? " (epoll)" : " (nio)");
     }
 
+    private RouteDecisionRepository decisionRepo;
+
     public void shutdown() {
         running = false;
+        if (decisionRepo != null) {
+            decisionRepo.stop();
+        }
         if (managementServer != null) {
             managementServer.shutdown();
         }

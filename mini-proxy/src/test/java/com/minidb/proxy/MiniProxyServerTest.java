@@ -44,7 +44,8 @@ class MiniProxyServerTest {
                 new SqlParserImpl(),
                 new SqlRouterImpl(config.shardCount(), config.readAfterWriteWindowMs()),
                 pool,
-                new RouteDecisionLog(100));
+                new RouteDecisionLog(100),
+                null);
     }
 
     @Test

@@ -897,6 +897,26 @@ function DatabaseTrace({ lang, orderId, setOrderId, backToOrders }: { lang: Lang
             key: 'sql', label: lang === 'zh' ? 'SQL 历史' : 'SQL History',
             children: <pre className="trace-pre">{(trace?.sqlHistory ?? []).join('\n\n')}</pre>,
           },
+          {
+            key: 'audit', label: lang === 'zh' ? '审计日志' : 'Audit Log',
+            children: trace?.sqlAuditLogs?.length ? (
+              <ProTable rowKey="traceId" search={false} pagination={{ defaultPageSize: 10 }}
+                dataSource={trace.sqlAuditLogs.map((e, i) => ({ ...e, _key: i }))}
+                columns={[
+                  { title: 'Trace ID', dataIndex: 'traceId', ellipsis: true, width: 180,
+                    render: (_, r) => <Typography.Text code>{String(r.traceId).substring(0, 20)}</Typography.Text> },
+                  { title: lang === 'zh' ? '目标' : 'Target', dataIndex: 'targetDs', width: 110,
+                    render: (_, r) => <Tag color={r.targetDs === 'COORDINATOR' ? 'purple' : r.targetDs === 'PRIMARY' ? 'blue' : 'green'}>{String(r.targetDs)}</Tag> },
+                  { title: lang === 'zh' ? '摘要' : 'Summary', dataIndex: 'sqlSummary', ellipsis: true },
+                  { title: lang === 'zh' ? '状态' : 'Status', dataIndex: 'status', width: 90,
+                    render: (_, r) => <Tag color={r.status === 'OK' || r.status === 'COMMITTED' ? 'green' : 'red'}>{String(r.status)}</Tag> },
+                  { title: lang === 'zh' ? '耗时' : 'Time', dataIndex: 'elapsedMs', width: 80,
+                    render: (_, r) => `${r.elapsedMs}ms` },
+                  { title: lang === 'zh' ? '时间' : 'Created', dataIndex: 'createdAt', width: 180 },
+                ]}
+              />
+            ) : <Alert type="info" message={lang === 'zh' ? '暂无审计日志（需要 V004 迁移和真实 MySQL）' : 'No audit logs (needs V004 migration and real MySQL)'} />,
+          },
         ]} />
       </Space>
     </PageContainer>
@@ -910,7 +930,12 @@ function TraceTimelineView({ trace, decisions, lang }: { trace?: OrderTrace; dec
     items.push({ color: 'blue', children: <span><strong>{lang === 'zh' ? '路由策略' : 'Route'}:</strong> {trace.route}</span> });
   }
   if (trace?.transactionContext) {
-    items.push({ color: 'purple', children: <span><strong>{lang === 'zh' ? '事务上下文' : 'Transaction'}:</strong> {trace.transactionContext}</span> });
+    const is2pc = trace.transactionContext.includes('2PC');
+    items.push({ color: is2pc ? 'purple' : 'blue', children: <span>
+      <strong>{lang === 'zh' ? '事务模式' : 'TX Mode'}:</strong>{' '}
+      <Tag color={is2pc ? 'purple' : 'blue'}>{is2pc ? '2PC' : 'Single-DB'}</Tag>
+      {' '}{trace.transactionContext}
+    </span> });
   }
 
   trace?.timeline?.forEach((t) => {
@@ -926,6 +951,21 @@ function TraceTimelineView({ trace, decisions, lang }: { trace?: OrderTrace; dec
   trace?.outbox?.forEach((r) => {
     const item = r as Record<string, unknown>;
     items.push({ color: 'cyan', children: <span>Outbox: <Tag>{String(item.eventType)}</Tag> status={String(item.status)} retry={String(item.retryCount)}</span> });
+  });
+
+  // SQL Audit Logs with 2PC details
+  trace?.sqlAuditLogs?.forEach((entry) => {
+    const is2pc = entry.targetDs === 'COORDINATOR';
+    const isError = entry.status === 'ABORTED' || entry.errorCode;
+    items.push({
+      color: is2pc ? 'purple' : isError ? 'red' : 'blue',
+      children: <span>
+        {is2pc ? '⚡ 2PC' : 'SQL'}: <Tag color={is2pc ? 'purple' : isError ? 'red' : 'green'}>{entry.targetDs}</Tag>
+        {' '}{entry.sqlSummary.length > 100 ? entry.sqlSummary.substring(0, 100) + '...' : entry.sqlSummary}
+        {entry.elapsedMs > 0 && <Typography.Text type="secondary"> ({entry.elapsedMs}ms)</Typography.Text>}
+        {entry.traceId && <Typography.Text type="secondary"> trace:{entry.traceId.substring(0, 20)}</Typography.Text>}
+      </span>,
+    });
   });
 
   decisions?.decisions?.slice(0, 10).forEach((d) => {

@@ -67,12 +67,16 @@ class OrderServiceProxyModeTest {
     }
 
     @Test
-    void shouldRejectOrderWritesInProxyMode() {
+    void shouldAttempt2pcInProxyModeInsteadOfRejecting() {
+        // v9: proxy mode no longer rejects writes with PROXY_MODE_UNSUPPORTED_WRITE.
+        // Instead, the 2PC coordinator attempts to coordinate across PRIMARY + shard.
+        // In H2 test environment, 2PC will fail with a connection error (no real MySQL).
         var req = new CreateOrderRequest(userId,
                 List.of(new CreateOrderRequest.OrderItemRequest(1001L, 1)), null);
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> orderService.createOrder(req, "proxy-create-key-1"));
-        assertEquals("PROXY_MODE_UNSUPPORTED_WRITE", ex.getErrorCode());
+                () -> orderService.createOrder(req, "proxy-2pc-key-" + System.nanoTime()));
+        assertNotEquals("PROXY_MODE_UNSUPPORTED_WRITE", ex.getErrorCode(),
+                "Proxy mode should attempt 2PC instead of rejecting writes");
     }
 
     private void seedTestOrder() {

@@ -49,3 +49,9 @@ minidb:
     payment-timeout-minutes: 30
     shard-count: 4
     proxy-mode: false
+  shard:
+    host: ${MINIDB_BACKEND_HOST:127.0.0.1}
+    port-base: ${MINIDB_SHARD_PORT_BASE:4409}
+    username: ${MINIDB_BACKEND_USERNAME:root}
+    password: ${MINIDB_BACKEND_PASSWORD:root123}
+    database-prefix: ${MINIDB_SHARD_DATABASE_PREFIX:minidb_shard_}
