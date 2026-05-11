@@ -357,55 +357,7 @@ sql_demo/
 
 
 
-proxy 实验模式启动参考：
 
-```bash
-# 先启动或准备你自己的 MySQL 后端，再启动 mini-proxy
-set MINIDB_BACKEND_HOST=127.0.0.1
-set MINIDB_BACKEND_PORT_BASE=4407
-set MINIDB_PRIMARY_DATABASE=minidb
-set MINIDB_REPLICA_DATABASE=minidb
-set MINIDB_SHARD_DATABASE_PREFIX=minidb_shard_
-mvn -pl mini-proxy exec:java -Dexec.mainClass=com.minidb.proxy.MiniProxyServer
-
-# order-api 经 proxy 访问，仅用于分片实验接口验证
-mvn -f order-api/pom.xml spring-boot:run -Dspring-boot.run.profiles=proxy
-```
-
-proxy smoke 验收入口：
-
-```bash
-# 默认 dry-run，不连接数据库、不写数据
-python tools/proxy_smoke.py
-
-# 真实联调时显式执行网络检查
-python tools/proxy_smoke.py --execute --json
-```
-
-
-
-- 本轮验收命令：
-
-
-```bash
-mvn -pl mini-proxy test
-mvn -pl order-api test
-npm --prefix web-console run lint
-npm --prefix web-console run test
-python tools/verify_local.py --json
-```
-
-本轮实际验证结果：
-
-- `mvn -pl mini-proxy test -B`：通过，73 个测试通过，1 个原有手工集成测试跳过。
-- `mvn -pl order-api -am test -B`：通过，46 个 order-api 测试和 28 个 mini-mvcc 测试通过。
-- `npm --prefix web-console run lint`：通过。
-- `npm --prefix web-console run test`：通过，2 个前端测试通过。
-- `npm --prefix web-console run build`：通过，TypeScript 编译和 Vite 构建成功。
-- `mvn -B verify`：通过，全 Maven reactor 成功。
-- `python tools/verify_local.py --json`：通过，包含环境、结构、proxy dry-run、后端测试、前端 lint/test 和 Maven verify。
-- `git diff --check`：通过，无空白错误。
-- `python tools/proxy_smoke.py --execute --json`：未执行；当前 Docker daemon 未启动，未发现可用的本地 MySQL/proxy 联调环境。本轮已保留 dry-run smoke 作为非破坏性验收，真实网络 smoke 需在后端环境启动后执行。
 
 
 
